@@ -173,7 +173,7 @@ there.
 ```
 mise install    the toolchain
 mise run pg     a throwaway Postgres, and the POSTGRES_DSN to export
-mise run test   go test ./... -race
+mise run test   the tests
 mise run ci     what CI runs
 ```
 

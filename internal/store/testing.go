@@ -41,13 +41,12 @@ func TestDB(t *testing.T) *DB {
 	if strings.Contains(dsn, "?") {
 		sep = "&"
 	}
+	if err := createSchema(t, dsn, schema); err != nil {
+		t.Fatalf("creating the schema: %v", err)
+	}
 	db, err := Open(t.Context(), dsn+sep+"search_path="+schema)
 	if err != nil {
 		t.Fatalf("connecting: %v", err)
-	}
-	if _, err := db.pool.Exec(t.Context(),
-		fmt.Sprintf("CREATE SCHEMA IF NOT EXISTS %s", schema)); err != nil {
-		t.Fatalf("creating the schema: %v", err)
 	}
 	if _, err := db.Migrate(t.Context()); err != nil {
 		t.Fatalf("migrating: %v", err)
@@ -58,4 +57,57 @@ func TestDB(t *testing.T) *DB {
 		db.Close()
 	})
 	return db
+}
+
+// TestDSN gives a test its own schema and the DSN that reaches it, for a
+// test that starts the whole service rather than opening the store itself.
+// Same isolation as TestDB, and dropped the same way.
+func TestDSN(t *testing.T) string {
+	t.Helper()
+	dsn := os.Getenv("POSTGRES_DSN")
+	if dsn == "" {
+		t.Skip("POSTGRES_DSN is not set; run `mise run pg` and export what it prints")
+	}
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		t.Fatal(err)
+	}
+	schema := "tasksd_test_" + hex.EncodeToString(b[:])
+	sep := "?"
+	if strings.Contains(dsn, "?") {
+		sep = "&"
+	}
+	scoped := dsn + sep + "search_path=" + schema
+
+	// The schema is created over the UNSCOPED dsn, before anything connects
+	// to the scoped one. A connection whose search_path names a schema that
+	// does not exist yet silently reads the default one instead, so a pool
+	// opened first can end up with one connection in the test's schema and
+	// another in a schema every test shares.
+	if err := createSchema(t, dsn, schema); err != nil {
+		t.Fatalf("creating the schema: %v", err)
+	}
+	t.Cleanup(func() {
+		cleanup, err := Open(context.Background(), dsn)
+		if err != nil {
+			return
+		}
+		defer cleanup.Close()
+		_, _ = cleanup.pool.Exec(context.Background(),
+			fmt.Sprintf("DROP SCHEMA IF EXISTS %s CASCADE", schema))
+	})
+	return scoped
+}
+
+// createSchema makes a test's schema over a connection that is not scoped to
+// it, so every later connection finds it already there.
+func createSchema(t *testing.T, dsn, schema string) error {
+	t.Helper()
+	db, err := Open(t.Context(), dsn)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	_, err = db.pool.Exec(t.Context(), fmt.Sprintf("CREATE SCHEMA IF NOT EXISTS %s", schema))
+	return err
 }

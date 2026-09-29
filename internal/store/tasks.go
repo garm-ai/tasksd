@@ -63,9 +63,11 @@ type Task struct {
 	// Requester is the person the run was started for, and the one person
 	// who may not decide this task.
 	Requester string
-	ToolFQN   string
-	Subject   string
-	Material  map[string]string
+	// Agent is who the runner was acting as when it asked.
+	Agent    string
+	ToolFQN  string
+	Subject  string
+	Material map[string]string
 	// MaterialDigest is what the grant is bound to, computed once when the
 	// task is opened so a later read cannot recompute it differently.
 	MaterialDigest  string
@@ -131,7 +133,7 @@ type Filter struct {
 	Limit   int
 }
 
-const taskColumns = `id, tenant, kind, run_id, requester, tool_fqn, subject, material,
+const taskColumns = `id, tenant, kind, run_id, requester, agent, tool_fqn, subject, material,
 	material_digest, predicate, state, claimant, claim_expires_at, decision, reason,
 	decided_by, on_behalf_of, grant_jti, "grant", decision_type, question,
 	catalogue_digest, answer, created_at, expires_at, decided_at`
@@ -159,13 +161,13 @@ func (d *DB) Create(ctx context.Context, t Task, ev Event) (Task, bool, error) {
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	tag, err := tx.Exec(ctx, `
-		INSERT INTO tasks (id, tenant, kind, run_id, requester, tool_fqn, subject,
+		INSERT INTO tasks (id, tenant, kind, run_id, requester, agent, tool_fqn, subject,
 		                   material, material_digest, predicate, state,
 		                   decision_type, question, catalogue_digest,
 		                   created_at, expires_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
 		ON CONFLICT (tenant, run_id, tool_fqn, material_digest) DO NOTHING`,
-		t.ID, t.Tenant, string(t.Kind), t.RunID, t.Requester, t.ToolFQN, t.Subject,
+		t.ID, t.Tenant, string(t.Kind), t.RunID, t.Requester, t.Agent, t.ToolFQN, t.Subject,
 		material, t.MaterialDigest, pred, string(StateOpen),
 		t.DecisionType, t.Question, t.CatalogueDigest, t.CreatedAt, t.ExpiresAt)
 	if err != nil {
@@ -575,7 +577,7 @@ func scanTask(s scanner) (Task, error) {
 		material []byte
 		pred     []byte
 	)
-	err := s.Scan(&t.ID, &t.Tenant, &kind, &t.RunID, &t.Requester, &t.ToolFQN, &t.Subject,
+	err := s.Scan(&t.ID, &t.Tenant, &kind, &t.RunID, &t.Requester, &t.Agent, &t.ToolFQN, &t.Subject,
 		&material, &t.MaterialDigest, &pred, &state, &t.Claimant, &t.ClaimExpiresAt,
 		&decision, &t.Reason, &t.DecidedBy, &t.OnBehalfOf, &t.GrantJTI, &t.Grant,
 		&t.DecisionType, &t.Question, &t.CatalogueDigest, &t.Answer,

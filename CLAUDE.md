@@ -20,10 +20,12 @@ from a delegated identity, no `decide_task` with a delegation chain, no
 verification of a delegated grant — live in three different processes so that
 one of them being wrong is not the end of it.
 
-**3. An agent may work a queue, never close one with a yes.** `triage_task`
-recommends, comments, reassigns to a stricter audience, or declines. A
-recommendation to approve is recorded as what the agent thinks and changes
-nothing.
+**3. A queue can be worked without being closed with a yes.** `triage_task`
+recommends, comments, reassigns to a stricter audience, or declines, and a
+person may call it as well as an agent — reassigning a stale task is work,
+not a decision. A recommendation to approve is recorded as what the caller
+thinks and changes nothing. There is no argument to any method here that
+lets an agent approve.
 
 **4. No contract is written here.** `garm.tasks.v1` and `garm.card.v1` come
 from `github.com/garm-ai/garm`, generated there and imported here. There is

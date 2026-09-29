@@ -17,6 +17,9 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- the decision is signalled; the requester is who may not decide it.
     run_id           text        NOT NULL,
     requester        text        NOT NULL,
+    -- The agent the runner was acting as when it asked. It is what a card
+    -- names as the service behind the run it points at.
+    agent            text        NOT NULL DEFAULT '',
     tool_fqn         text        NOT NULL DEFAULT '',
     subject          text        NOT NULL DEFAULT '',
     -- Material is JSON in the clear: it is the digest's input and the card's
