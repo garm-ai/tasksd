@@ -41,6 +41,9 @@ jobs:
       - uses: jdx/mise-action@v2
         with: { install: true, cache: true }
       # Formatting, vet, build, the tests with a real Postgres, tidiness of
-      # go.mod, and the two boundary checks: no path to the daemon or to a
-      # token minter, and no replace directive.
+      # go.mod, and the three boundary checks: no path to the daemon or to a
+      # token minter, no path back to `github.com/garm-ai/garm` — the module
+      # the contracts left, which registers the same descriptor files and so
+      # makes a binary that builds and then panics at init — and no replace
+      # directive.
       - run: mise run ci

@@ -84,6 +84,82 @@ fi
 echo "ok: no path to the daemon or to a token minter"
 """
 
+[tasks."no-old-contracts"]
+description = "Fail if the module the contracts left is back in the build graph"
+# This one is not a dependency policy and nothing is gained by granting it an
+# exception: `github.com/garm-ai/garm` and `github.com/garm-ai/contracts`
+# register the SAME protobuf descriptor file paths, so a binary linking both
+# dies in `protoregistry` at init. It compiles cleanly and then does not
+# start, which is exactly why this is a check rather than a note — `go build`
+# is green either way and only running the binary tells you. That happened to
+# real binaries on 2026-09-29. The failure message says all of it, because the
+# person who trips this in six months reads the output and not this comment.
+#
+# Anchored on the module path. `github.com/garm-ai/garm` and its packages must
+# fail; `github.com/garm-ai/garmd` must not, and neither must a future
+# `github.com/garm-ai/garm-anything`. A bare `grep garm-ai/garm` matches the
+# daemon and every consumer, which is a check that fails for the wrong reason
+# and then gets loosened until it fails for none.
+#
+# Same `go list` lesson as `no-enforcement`: the assignment is on its own line
+# and its exit code is checked first, because a `go list` that fails inside an
+# `if` reads as a clean check, and the empty-output guard covers a `go list`
+# that succeeds and prints nothing.
+#
+# And the graph is read under more than one set of build inputs, because one
+# `go list` is not the whole build: `./...` is what ships, and `-test ./...`
+# adds the test-only imports, where a duplicate registration is just as fatal
+# — it panics in package init, so `go test` never reaches a test function. If
+# this repository ever grows a `//go:build` tag, that tag set belongs in this
+# list too; a dependency reachable only under a tag is invisible to a single
+# default-tag `go list`.
+run = """
+found=0
+for graph in "./..." "-test ./..."; do
+  deps=$(go list -deps $graph) || exit 1
+  if [ -z "$deps" ]; then
+    echo "go list -deps $graph printed nothing; that is a broken check, not a clean one" >&2
+    exit 1
+  fi
+  bad=$(printf '%s\\n' "$deps" | grep -E '^github\\.com/garm-ai/garm(/|$)' || true)
+  if [ -n "$bad" ]; then
+    found=1
+    echo "reachable under: go list -deps $graph" >&2
+    printf '%s\\n' "$bad" | sed 's|^|  |' >&2
+  fi
+done
+if [ "$found" -eq 1 ]; then
+  cat >&2 <<'WHY'
+
+github.com/garm-ai/garm is back in tasksd's build graph.
+
+This is not a dependency policy and there is no exception to add. The
+contracts left that module for github.com/garm-ai/contracts in September
+2026, and both modules still register the same protobuf descriptor file
+paths — garm/tool/v1/attribution.proto and the rest. A process that links
+both panics in protoregistry during package init:
+
+  panic: proto: file "garm/tool/v1/attribution.proto" is already registered
+
+So the symptom is a binary that builds, passes every test that does not link
+both, and then dies at startup before main. That is what this check exists to
+catch, because nothing else in CI will.
+
+To fix it, move the dependency rather than this check:
+
+  * a direct import of github.com/garm-ai/garm/... becomes the matching
+    package under github.com/garm-ai/contracts/...
+  * if it arrived transitively, `go mod why github.com/garm-ai/garm` names the
+    consumer that has not migrated yet — bump it to a release that has
+  * github.com/garm-ai/tool-go before v0.6.0 is still on the old module, so a
+    downgrade there brings this straight back
+
+WHY
+  exit 1
+fi
+echo "ok: the contracts' old module is in neither build graph"
+"""
+
 [tasks."no-replace"]
 description = "Fail on a replace directive"
 # Every dependency is a real, resolvable version. A replace pointing at a
@@ -98,4 +174,4 @@ echo "ok: no replace directive"
 
 [tasks.ci]
 description = "Everything CI runs"
-depends = ["fmt-check", "lint", "build", "test", "tidy-check", "no-enforcement", "no-replace"]
+depends = ["fmt-check", "lint", "build", "test", "tidy-check", "no-enforcement", "no-old-contracts", "no-replace"]

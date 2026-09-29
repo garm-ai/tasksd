@@ -34,7 +34,12 @@ directive in `go.mod`. The contracts used to live inside `garm` and moved out
 into a module of their own; nothing may import `github.com/garm-ai/garm`
 again, and not only for tidiness — both copies register the same descriptor
 file paths, so a binary linking the two builds and then dies in
-`protoregistry` at init.
+`protoregistry` at init. **That is enforced rather than remembered:**
+`mise run no-old-contracts`, which `mise run ci` depends on, fails the build
+when `go list -deps` names that module, matching the module path exactly so
+`garm-ai/garmd` is untouched, and reading both the shipped graph and the
+`-test` one because a test binary that panics in init is as dead as a
+shipped one.
 
 ## Layout
 
