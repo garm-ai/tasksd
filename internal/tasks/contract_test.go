@@ -3,7 +3,7 @@ package tasks_test
 import (
 	"testing"
 
-	"github.com/garm-ai/garm/contracts/wire"
+	"github.com/garm-ai/contracts/wire"
 
 	"github.com/garm-ai/tasksd/internal/tasks"
 )

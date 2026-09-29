@@ -8,9 +8,9 @@ import (
 	"google.golang.org/protobuf/types/known/anypb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	cardv1 "github.com/garm-ai/garm/contracts/garm/card/v1"
-	tasksv1 "github.com/garm-ai/garm/contracts/garm/tasks/v1"
-	toolv1 "github.com/garm-ai/garm/contracts/garm/tool/v1"
+	cardv1 "github.com/garm-ai/contracts/garm/card/v1"
+	tasksv1 "github.com/garm-ai/contracts/garm/tasks/v1"
+	toolv1 "github.com/garm-ai/contracts/garm/tool/v1"
 
 	"github.com/garm-ai/tasksd/internal/store"
 )

@@ -40,8 +40,12 @@ type Config struct {
 	// to start rather than accept decisions it cannot verify.
 	GrantKeys []byte
 
-	// Concurrency bounds the calls in flight. Zero takes the runtime's own
-	// default.
+	// Concurrency is how many calls this process handles at once, per tool.
+	// It is not a goroutine count: the runtime registers one micro service
+	// instance per unit, each with its own subscriptions and its own
+	// $SRV.INFO identity, so a large number here is a large number of
+	// responders in the plane's discovery round rather than a cheap bound.
+	// Zero takes garmtool.DefaultConcurrency.
 	Concurrency int
 	// ClaimTTL is how long a claim holds before anybody may release it.
 	// Zero takes the service's default.
@@ -62,10 +66,15 @@ type Config struct {
 	Log *slog.Logger
 }
 
-// ContractVersion is the version of the garm contracts this build was
-// generated against, advertised beside the wire shape so a daemon can tell
-// which contract this process implements.
-const ContractVersion = "v0.17.0"
+// ContractVersion is the version of github.com/garm-ai/contracts this build
+// links, advertised beside the wire shape so a daemon can tell which
+// contract this process implements.
+//
+// Keep it in step with the version in go.mod. It moved from garm's own
+// version when the contracts left that repository and became a module of
+// their own; what a daemon compares it against is the catalogue, which is
+// built from the same module.
+const ContractVersion = "v0.2.0"
 
 // defaultSweep is how often expiry runs when the caller names no interval.
 const defaultSweep = time.Minute
@@ -136,11 +145,15 @@ func Serve(ctx context.Context, cfg Config) error {
 		DB: db, Signal: signaller, Log: log, ClaimTTL: cfg.ClaimTTL, GrantKeys: keys,
 	}
 
-	opts := []garmtool.Option{}
-	if cfg.Concurrency > 0 {
-		opts = append(opts, garmtool.WithConcurrency(cfg.Concurrency))
-	}
-	runtime := garmtool.New("tasks", serviceVersion(cfg.Version), opts...)
+	// The logger goes in so the runtime reports the configuration actually
+	// in force — the concurrency included, whether this caller named one or
+	// took the default — on this service's own log stream rather than
+	// nowhere. A non-positive Concurrency leaves garmtool's default, which
+	// is what WithConcurrency does with it, so there is no guard here.
+	runtime := garmtool.New("tasks", serviceVersion(cfg.Version),
+		garmtool.WithConcurrency(cfg.Concurrency),
+		garmtool.WithLogger(log),
+	)
 	if err := tasks.Register(runtime, tasks.Handlers{Svc: svc}, ContractVersion); err != nil {
 		return err
 	}

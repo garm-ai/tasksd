@@ -25,31 +25,21 @@ bottom is already too long.
 can be released by anybody, which is what unblocks the task. The row still
 says `CLAIMED` until somebody does that or until the task expires.
 
-## Not ours, and in the way
-
-**The race detector cannot run over the wire-level suite.** `tool-go` v0.5.0
-runs a request's handler in a goroutine of its own, and `nats.go`'s micro
-package reads that request's error field after the handler returns, to count
-it in the endpoint's statistics. Any tool service that answers a coded
-refusal therefore trips the detector, inside those two libraries and nowhere
-near this repository — the two stacks in the report are `micro.(*request).Error`
-and `micro.(*service).reqHandler`. `mise run test` runs the detector over
-this repository's own packages and runs the wire suite without it. It goes
-back the moment `tool-go` answers from the goroutine micro is waiting on, or
-stops reading the request after handing it over.
-
 ## Where a check is thinner than the design
 
 **The wire shape this service advertises is computed here.** A daemon
 compares what a service advertises with what the catalogue declares, and
 refuses to route when they differ. The value is derived from the linked
 contract by `internal/tasks/contract.go`, using the encoding
-`garm catalogue build` stamps — written here because that function is not
-exported from `garm` and no generated binding for this contract exists yet.
-The right home for it is `garm`'s contracts module, beside the approval
-verification that moved there; when it lands this becomes an import. A
-mismatch is loud rather than silent: the daemon refuses to route and says
-which package and why.
+`garm catalogue build` stamps — written here because that function is
+`garm`'s own unexported `internal/compiler` and no generated binding for this
+contract exists yet. `github.com/garm-ai/contracts` v0.2.0 exports nothing
+that supersedes it: the module carries the descriptor-hash *field* on
+`garm.catalogue.v1.Catalogue` and no function that computes one. That module
+is still the right home — beside `grants`, which both sides already share —
+and this becomes an import when it lands there. Until then the golden test
+beside it is what pins the encoding, and a mismatch is loud rather than
+silent: the daemon refuses to route and says which package and why.
 
 **A triage decline is a decision made outside the claim.** `triage_task`
 admits a person and an agent, and a DECLINE through it refuses the requester
@@ -60,10 +50,10 @@ daemon's instance authorization lands, four eyes is the guard on that path.
 
 **The invocation carries no runner identity.** §4.4 asks `create_task` to
 check that an execution identity is present beside the delegation chain.
-`garm.tool.v1.InvocationContext` has no such field at v0.17.0, so what is
-checked is that the principal is a person, that the chain names an agent, and
-that a run id is on the call. The check gets stricter when the contract
-carries the identity.
+`garm.tool.v1.InvocationContext` has no such field at `contracts` v0.2.0, so
+what is checked is that the principal is a person, that the chain names an
+agent, and that a run id is on the call. The check gets stricter when the
+contract carries the identity.
 
 **Nothing here spends an approval.** Single use belongs to the daemon, which
 holds the replay cache. An approval replayed at this service closes a task

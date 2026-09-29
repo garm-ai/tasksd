@@ -3,7 +3,7 @@ package tasks
 import (
 	"strings"
 
-	toolv1 "github.com/garm-ai/garm/contracts/garm/tool/v1"
+	toolv1 "github.com/garm-ai/contracts/garm/tool/v1"
 )
 
 // clearanceValue reads a clearance written either way: the enum's own name

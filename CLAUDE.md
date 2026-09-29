@@ -28,9 +28,13 @@ thinks and changes nothing. There is no argument to any method here that
 lets an agent approve.
 
 **4. No contract is written here.** `garm.tasks.v1` and `garm.card.v1` come
-from `github.com/garm-ai/garm`, generated there and imported here. There is
-no `proto/` directory in this repository and there is no `replace` directive
-in `go.mod`.
+from `github.com/garm-ai/contracts`, generated there and imported here. There
+is no `proto/` directory in this repository and there is no `replace`
+directive in `go.mod`. The contracts used to live inside `garm` and moved out
+into a module of their own; nothing may import `github.com/garm-ai/garm`
+again, and not only for tidiness — both copies register the same descriptor
+file paths, so a binary linking the two builds and then dies in
+`protoregistry` at init.
 
 ## Layout
 
@@ -58,8 +62,20 @@ else. A second transport would not be a second set of rules.
 
 The one thing that is not there is the approval itself:
 `internal/tasks/grant.go` holds it to the task, over
-`garm/contracts/grants` — the shared verification both this service and the
-daemon use, so the binding is written once.
+`github.com/garm-ai/contracts/grants` — the shared verification both this
+service and the daemon use, so the binding is written once.
+
+## Concurrency is instances, not goroutines
+
+`tool-go` v0.6.0 runs a handler synchronously in the goroutine its
+subscription owns, because `nats.go`'s `micro` reads a request's error field
+the moment the handler returns. So `garmtool.WithConcurrency(n)` registers n
+micro service instances in one queue group rather than sizing a pool, and
+every instance is another responder on `$SRV.INFO`. `--concurrency` defaults
+to `garmtool.DefaultConcurrency` — taken from the constant rather than
+written down here, so the two cannot drift — and raising it is a decision
+about the whole plane's discovery, not about this process. `Serve` passes its
+logger in, so the effective configuration is one line at startup.
 
 ## Working here
 

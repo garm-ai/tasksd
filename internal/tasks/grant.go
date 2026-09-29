@@ -3,7 +3,7 @@ package tasks
 import (
 	"time"
 
-	"github.com/garm-ai/garm/contracts/grants"
+	"github.com/garm-ai/contracts/grants"
 
 	"github.com/garm-ai/tasksd/internal/store"
 )

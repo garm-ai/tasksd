@@ -7,8 +7,8 @@ call waiting on a decision, with the values the person is being asked about,
 the audience that may answer, and the trail of what happened.
 
 It is a governed tool like any other. The contract lives in
-[garm](https://github.com/garm-ai/garm) as `garm.tasks.v1`, the service
-answers over NATS, and every call goes through
+[contracts](https://github.com/garm-ai/contracts) as `garm.tasks.v1`, the
+service answers over NATS, and every call goes through
 [garmd](https://github.com/garm-ai/garmd) first — so opening a task, reading
 the queue, claiming one and deciding it are each a governed call with a
 ledger row, a declared clearance and an audience, the same as the payment the
@@ -123,13 +123,28 @@ parsing and a call to the same function.
 | `--nats` | The broker to serve on |
 | `--postgres` | This service's own database. Also read from `POSTGRES_DSN` |
 | `--grant-keys` | The JWKS of the service that mints approvals. Required |
-| `--concurrency` | Calls in flight at once. Default 16 |
+| `--concurrency` | Calls in flight at once, per tool. Default 4 |
 | `--claim-ttl` | How long a claim holds before anybody may release it. Default 30m |
 | `--sweep-every` | How often tasks that ran out of time are marked expired. Default 1m |
 
 There is no policy file. Who may approve what is declared on the tool being
 approved and carried on the task; who may call these tools is in the
 catalogue.
+
+`--concurrency` is not a goroutine count. A handler runs synchronously in the
+goroutine its subscription owns, so the runtime buys a second call in flight
+by registering a second micro service instance — its own subscriptions and
+its own `$SRV.INFO` identity, in the same queue group. Four is the runtime's
+default and this binary's: every instance answers a discovery round, garmd
+collects one into a channel buffered at 64, and the reference plane is
+already ten or eleven services. Raise it for a tool that spends its call
+waiting on I/O; this one spends it waiting on a person, and throughput past
+that is more processes behind the queue group, which costs discovery one
+identity rather than four.
+
+The service writes one line at startup naming the configuration actually in
+force — the concurrency included, whether it was passed or defaulted — so
+what is running is readable from the log rather than from this table.
 
 ## The store
 

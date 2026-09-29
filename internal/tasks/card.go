@@ -5,7 +5,7 @@ import (
 	"sort"
 	"time"
 
-	cardv1 "github.com/garm-ai/garm/contracts/garm/card/v1"
+	cardv1 "github.com/garm-ai/contracts/garm/card/v1"
 
 	"github.com/garm-ai/tasksd/internal/store"
 )

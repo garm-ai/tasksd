@@ -21,6 +21,8 @@ import (
 
 	"github.com/nats-io/nats.go"
 
+	"github.com/garm-ai/tool-go/garmtool"
+
 	"github.com/garm-ai/tasksd"
 )
 
@@ -38,7 +40,17 @@ func run(log *slog.Logger) error {
 		"Postgres DSN for this service's own database (required)")
 	grantKeys := flag.String("grant-keys", "",
 		"Path to the JWKS of the service that mints approvals (required)")
-	concurrency := flag.Int("concurrency", 16, "Calls in flight at once")
+	// Four, from the runtime rather than written down here, because the
+	// number is arithmetic about the whole plane and not a taste of this
+	// service's: every unit of concurrency is a micro service instance
+	// answering $SRV.INFO separately, and garmd collects a discovery round
+	// into a channel buffered at 64. Sixteen, which this flag used to
+	// default to when a unit was a goroutine, would put this one service
+	// into a quarter of that buffer. A queue a person works does not need
+	// more; a deployment that does runs more processes behind the queue
+	// group, which costs the plane one identity each rather than n.
+	concurrency := flag.Int("concurrency", garmtool.DefaultConcurrency,
+		"Calls in flight at once, per tool — one micro service instance each")
 	claimTTL := flag.Duration("claim-ttl", 0,
 		"How long a claim holds before anybody may release it (default 30m)")
 	sweep := flag.Duration("sweep-every", 0,

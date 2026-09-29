@@ -17,8 +17,8 @@ package tasks
 import (
 	"context"
 
-	"github.com/garm-ai/garm/contracts/callctx"
-	toolv1 "github.com/garm-ai/garm/contracts/garm/tool/v1"
+	"github.com/garm-ai/contracts/callctx"
+	toolv1 "github.com/garm-ai/contracts/garm/tool/v1"
 )
 
 // Caller is the identity behind one call, read off the hop and nowhere else.

@@ -3,8 +3,8 @@ module github.com/garm-ai/tasksd
 go 1.26.0
 
 require (
-	github.com/garm-ai/garm v0.17.0
-	github.com/garm-ai/tool-go v0.5.0
+	github.com/garm-ai/contracts v0.2.0
+	github.com/garm-ai/tool-go v0.6.0
 	github.com/go-jose/go-jose/v4 v4.1.5
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/nats-io/nats-server/v2 v2.15.0

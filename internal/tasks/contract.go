@@ -9,8 +9,8 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 
-	tasksv1 "github.com/garm-ai/garm/contracts/garm/tasks/v1"
-	toolv1 "github.com/garm-ai/garm/contracts/garm/tool/v1"
+	tasksv1 "github.com/garm-ai/contracts/garm/tasks/v1"
+	toolv1 "github.com/garm-ai/contracts/garm/tool/v1"
 )
 
 // ServiceName is the proto service this process implements.

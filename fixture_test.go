@@ -34,10 +34,10 @@ import (
 	"github.com/nats-io/nats.go"
 	"google.golang.org/protobuf/proto"
 
-	"github.com/garm-ai/garm/contracts/callctx"
-	toolv1 "github.com/garm-ai/garm/contracts/garm/tool/v1"
-	"github.com/garm-ai/garm/contracts/grant"
-	"github.com/garm-ai/garm/contracts/wire"
+	"github.com/garm-ai/contracts/callctx"
+	toolv1 "github.com/garm-ai/contracts/garm/tool/v1"
+	"github.com/garm-ai/contracts/grant"
+	"github.com/garm-ai/contracts/wire"
 
 	"github.com/garm-ai/tasksd"
 	"github.com/garm-ai/tasksd/internal/store"
