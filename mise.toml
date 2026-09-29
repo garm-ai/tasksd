@@ -1,0 +1,94 @@
+# Toolchain and tasks for tasksd. `mise install` gets you a working checkout;
+# `mise run ci` is exactly what CI runs.
+#
+# Task names match every other garm-ai repository on purpose: `mise run test`
+# means the same thing everywhere, so moving between them costs no
+# relearning.
+
+[tools]
+go = "1.26"
+
+[tasks.build]
+description = "Build every package"
+run = "go build ./..."
+
+[tasks.test]
+description = "Run the tests"
+# -timeout because Go's default is ten minutes, and a test waiting on a
+# Postgres or a broker that never answers will sit there for all of it.
+run = "go test ./... -race -count=1 -timeout 300s"
+
+[tasks.lint]
+description = "Vet the Go"
+run = "go vet ./..."
+
+[tasks.fmt]
+description = "Format"
+run = "go fmt ./..."
+
+[tasks."fmt-check"]
+description = "Fail if anything is unformatted"
+run = """
+out=$(gofmt -l ./cmd ./internal .)
+if [ -n "$out" ]; then
+  echo "unformatted — run 'mise run fmt':" >&2
+  echo "$out" >&2
+  exit 1
+fi
+"""
+
+[tasks."tidy-check"]
+description = "Fail if go.mod or go.sum is not tidy"
+run = """
+go mod tidy -diff || { echo "not tidy: run 'go mod tidy'" >&2; exit 1; }
+echo "ok: go.mod and go.sum are tidy"
+"""
+
+[tasks.pg]
+description = "A throwaway Postgres for the store and wire tests"
+# The tests read POSTGRES_DSN and skip when it is unset. This is the one
+# command that makes them run locally.
+run = """
+docker rm -f tasksd-pg >/dev/null 2>&1 || true
+docker run -d --name tasksd-pg -e POSTGRES_PASSWORD=tasksd -e POSTGRES_USER=tasksd \\
+  -e POSTGRES_DB=tasksd -p 5440:5432 postgres:17-alpine >/dev/null
+echo 'export POSTGRES_DSN=postgres://tasksd:tasksd@127.0.0.1:5440/tasksd?sslmode=disable'
+"""
+
+[tasks."no-enforcement"]
+description = "Fail if this service can reach the daemon or a token minter"
+# A tool service must not be able to enforce, and must not be able to mint an
+# identity: either one in this dependency graph means something in a request
+# path could decide what it is only supposed to be told. The assignment is on
+# its own line because a `go list` that fails inside an `if` reads as a clean
+# check, and the empty-output guard covers a list that succeeds and prints
+# nothing.
+run = """
+deps=$(go list -deps -test ./...)
+if [ -z "$deps" ]; then
+  echo "go list produced no output at all; that is a broken check, not a clean one" >&2
+  exit 1
+fi
+if echo "$deps" | grep -qE 'garm-ai/(garmd|sts|devkit)'; then
+  echo "tasksd reaches the daemon or a token minter:" >&2
+  echo "$deps" | grep -E 'garm-ai/(garmd|sts|devkit)' >&2
+  exit 1
+fi
+echo "ok: no path to the daemon or to a token minter"
+"""
+
+[tasks."no-replace"]
+description = "Fail on a replace directive"
+# Every dependency is a real, resolvable version. A replace pointing at a
+# local checkout is invisible to `go install` and to CI from a clean clone.
+run = """
+if grep -Eq '^\\s*replace\\s' go.mod; then
+  echo "go.mod carries a replace directive" >&2
+  exit 1
+fi
+echo "ok: no replace directive"
+"""
+
+[tasks.ci]
+description = "Everything CI runs"
+depends = ["fmt-check", "lint", "build", "test", "tidy-check", "no-enforcement", "no-replace"]

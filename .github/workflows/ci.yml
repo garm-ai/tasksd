@@ -1,0 +1,46 @@
+# CI for tasksd.
+#
+# One job. The store and wire tests need a real Postgres, so the workflow
+# brings one up as a service container and hands its DSN to the tests — a
+# fake would be testing the fake, and the failures worth catching here are
+# constraint violations and the behaviour of an update that matches no rows.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: tasksd
+          POSTGRES_PASSWORD: tasksd
+          POSTGRES_DB: tasksd
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U tasksd"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      POSTGRES_DSN: postgres://tasksd:tasksd@127.0.0.1:5432/tasksd?sslmode=disable
+    steps:
+      - uses: actions/checkout@v5
+      - uses: jdx/mise-action@v2
+        with: { install: true, cache: true }
+      # Formatting, vet, build, the tests with a real Postgres, tidiness of
+      # go.mod, and the two boundary checks: no path to the daemon or to a
+      # token minter, and no replace directive.
+      - run: mise run ci

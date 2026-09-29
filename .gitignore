@@ -1,0 +1,4 @@
+# Build output. Nothing here is committed: the binary is built by `go build`
+# and installed by `go install`.
+/tasksd
+/dist/
