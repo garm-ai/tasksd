@@ -1,0 +1,57 @@
+version: v2
+modules:
+  # The contract this service answers, and the only thing generated here.
+  # `garm.tasks.v1` lives with the service that serves it: it is one service's
+  # API rather than platform vocabulary, and every other service's API in this
+  # platform lives with its service — `web.v1` in `garm-ai/tools`, the bank's
+  # `payments.v1` and `accounts.v1` in `garm-ai/examples`.
+  - path: proto
+    lint:
+      use: [STANDARD]
+      # These four exemptions came with the file from the contract module and
+      # are design decisions rather than conveniences. They are repeated here
+      # rather than referred to, because a lint configuration nobody can read
+      # in place is one somebody deletes.
+      #
+      # ENUM_VALUE_PREFIX: a task's kind, state and decision reach a person's
+      # client as protojson strings — "state": "CLAIMED", "decision":
+      # "APPROVE" — and that JSON is the contract with the renderer. buf's
+      # prefix convention would put STATE_CLAIMED on the wire.
+      #
+      # The three RPC naming rules: `garm.card.v1.TaskRef` is the request of
+      # get_task, approval_card, claim_task and release_task ON PURPOSE — a
+      # client builds one ref for a task and uses it at every endpoint,
+      # including the target tool's own approval card in another package. Four
+      # identical GetTaskRequest/ClaimTaskRequest messages would be four
+      # coercions and would stop the ref being the one thing that names a
+      # task. `Task` is likewise the answer of every method that changes one,
+      # because what a caller wants back after claiming, deciding or triaging
+      # is the task.
+      ignore_only:
+        ENUM_VALUE_PREFIX: [proto/garm/tasks/v1/tasks.proto]
+        RPC_REQUEST_STANDARD_NAME: [proto/garm/tasks/v1/tasks.proto]
+        RPC_RESPONSE_STANDARD_NAME: [proto/garm/tasks/v1/tasks.proto]
+        RPC_REQUEST_RESPONSE_UNIQUE: [proto/garm/tasks/v1/tasks.proto]
+  # The garm annotations and the card, vendored so the contract above can
+  # import them by their real paths. A module of their own so they stay OUT of
+  # what is generated: the Go for them already exists in
+  # github.com/garm-ai/contracts, which this module requires, and a second
+  # copy registering the same descriptor file paths panics in `protoregistry`
+  # at init. `mise run gen` takes proto/ as its input for exactly that reason,
+  # and `mise run one-tasks-contract` is what proves the panic cannot arrive
+  # from the other direction. BASIC because these files are judged in the
+  # repository that owns them, and are not this repository's to change.
+  - path: third_party/proto
+    lint:
+      use: [BASIC]
+# Field constraints, on create_task, decide_task and triage_task. A dependency
+# rather than a vendored copy, for the same reason the contract module takes it
+# as one: one version of the constraint vocabulary, shared by whoever compiles
+# a constraint and whoever evaluates it. buf.lock pins the commit, and it is
+# the commit the contract module pinned.
+deps:
+  - buf.build/bufbuild/protovalidate
+lint:
+  use: [STANDARD]
+breaking:
+  use: [FILE]

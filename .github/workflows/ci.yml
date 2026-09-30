@@ -41,9 +41,17 @@ jobs:
       - uses: jdx/mise-action@v2
         with: { install: true, cache: true }
       # Formatting, vet, build, the tests with a real Postgres, tidiness of
-      # go.mod, and the three boundary checks: no path to the daemon or to a
-      # token minter, no path back to `github.com/garm-ai/garm` — the module
-      # the contracts left, which registers the same descriptor files and so
-      # makes a binary that builds and then panics at init — and no replace
-      # directive.
+      # go.mod, and four boundary checks: no path to the daemon or to a token
+      # minter, no path back to `github.com/garm-ai/garm` — the module the
+      # contracts left — no second copy of `garm.tasks.v1`, which this
+      # repository now publishes and `github.com/garm-ai/contracts` still does
+      # too until the switchover, and no replace directive. The two descriptor
+      # checks exist because a binary that registers one file twice builds,
+      # vets, links and then panics in `protoregistry` before `main`.
+      #
+      # Plus the contract itself: `buf lint`, `buf breaking` against the last
+      # release, and `gen-check`, which regenerates `gen/` and refuses a copy
+      # that has drifted from `proto/`. That one reaches buf.build for the
+      # pinned protoc-gen-go plugin and for the protovalidate dependency in
+      # buf.lock, so this job needs the network it already has.
       - run: mise run ci

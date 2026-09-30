@@ -3,6 +3,7 @@ module github.com/garm-ai/tasksd
 go 1.26.0
 
 require (
+	buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.36.12-20260825204119-511051f7f437.2
 	github.com/garm-ai/contracts v0.2.0
 	github.com/garm-ai/tool-go v0.6.0
 	github.com/go-jose/go-jose/v4 v4.1.5
@@ -13,7 +14,6 @@ require (
 )
 
 require (
-	buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go v1.36.12-20260825204119-511051f7f437.2 // indirect
 	github.com/antithesishq/antithesis-sdk-go v0.8.0-default-no-op // indirect
 	github.com/google/go-tpm v0.9.8 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect

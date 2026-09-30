@@ -27,23 +27,45 @@ not a decision. A recommendation to approve is recorded as what the caller
 thinks and changes nothing. There is no argument to any method here that
 lets an agent approve.
 
-**4. No contract is written here.** `garm.tasks.v1` and `garm.card.v1` come
-from `github.com/garm-ai/contracts`, generated there and imported here. There
-is no `proto/` directory in this repository and there is no `replace`
-directive in `go.mod`. The contracts used to live inside `garm` and moved out
-into a module of their own; nothing may import `github.com/garm-ai/garm`
-again, and not only for tidiness — both copies register the same descriptor
-file paths, so a binary linking the two builds and then dies in
-`protoregistry` at init. **That is enforced rather than remembered:**
-`mise run no-old-contracts`, which `mise run ci` depends on, fails the build
-when `go list -deps` names that module, matching the module path exactly so
-`garm-ai/garmd` is untouched, and reading both the shipped graph and the
-`-test` one because a test binary that panics in init is as dead as a
-shipped one.
+**4. This repository owns one contract and writes no other.**
+`garm.tasks.v1` is `proto/garm/tasks/v1/tasks.proto`, generated into
+`gen/garm/tasks/v1` by `mise run gen` and committed; the import path is
+`github.com/garm-ai/tasksd/gen/garm/tasks/v1` and the Go package is still
+`tasksv1`. Everything else it needs — `garm.tool.v1`, `garm.card.v1`,
+`garm.meta.v1`, `wire`, `callctx`, `grant`, `grants` — comes from
+`github.com/garm-ai/contracts`, and the protos of the first three are vendored
+under `third_party/proto` so the contract's imports resolve. **Those are never
+generated**: their Go already exists in that module, and a second copy
+registering the same descriptor file paths panics in `protoregistry` at init.
+There is no `replace` directive in `go.mod`.
+
+Three things follow, and each is a check rather than a memory:
+
+- `garm.tasks.v1` is published from this module **and still from
+  `contracts`**, until the removal there lands. That is safe because nothing
+  links both, and `mise run one-tasks-contract` fails the build if anything —
+  a direct import or a transitive one — brings
+  `github.com/garm-ai/contracts/garm/tasks/v1` back into either build graph.
+- Nothing may import `github.com/garm-ai/garm`, the module the contracts left,
+  for the same descriptor-duplication reason: `mise run no-old-contracts`
+  matches the module path exactly so `garm-ai/garmd` is untouched.
+- `gen/` cannot drift from `proto/`: `mise run gen-check` regenerates and
+  compares, and `mise run breaking` asks `buf` whether the last release's
+  consumers still hold. What this service **advertises** is read off `gen/`, so
+  a stale `gen/` is a descriptor hash nobody can reproduce from the file.
+
+All three, and the rest, run under `mise run ci`. A binary that links two
+copies of a descriptor builds, vets, links and then dies before `main` — which
+is why these are checks and not conventions: `go build` is green either way.
 
 ## Layout
 
 ```
+proto/garm/tasks/v1/  the contract: eight tools, the messages, the policies
+gen/garm/tasks/v1/    the Go it generates, committed; `mise run gen-check`
+                      refuses a copy that has drifted from the proto
+third_party/proto/    the annotations and the card, vendored so the contract's
+                      imports resolve — in the buf workspace, never generated
 serve.go              package tasksd: Config and Serve — everything the
                       binary does, as a function a development stack can call
 cmd/tasksd/           the binary: flag parsing and a call to Serve
@@ -85,8 +107,9 @@ logger in, so the effective configuration is one line at startup.
 ## Working here
 
 ```
-mise install    the toolchain
+mise install    the toolchain — Go and buf
 mise run pg     a throwaway Postgres, and the POSTGRES_DSN to export
+mise run gen    buf generate: proto/ -> gen/
 mise run test   go test ./... -race
 mise run ci     what CI runs
 ```
@@ -106,6 +129,10 @@ The ones that govern this repository:
 - `specs/2026-09-28-approval-grants-design.md` — what an approval is
 - `specs/2026-09-24-call-stack-design.md` — the ten steps a call goes through
   before it reaches here
+- `decisions/2026-09-30-the-tasks-contract-moves-to-tasksd.md` — why
+  `garm.tasks.v1` is in `proto/` here rather than in the contract module, why
+  the package name did not change with it, and the switchover this repository
+  has already done its half of
 
 **Do not create `docs/superpowers/` here.**
 

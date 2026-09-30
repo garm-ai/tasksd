@@ -6,8 +6,9 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	cardv1 "github.com/garm-ai/contracts/garm/card/v1"
-	tasksv1 "github.com/garm-ai/contracts/garm/tasks/v1"
 	toolv1 "github.com/garm-ai/contracts/garm/tool/v1"
+
+	tasksv1 "github.com/garm-ai/tasksd/gen/garm/tasks/v1"
 )
 
 // theMaterial is what the person is being asked about, and what the

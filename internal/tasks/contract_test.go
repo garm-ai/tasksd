@@ -47,9 +47,30 @@ func TestTheContractDeclaresEightToolsOnTheirOwnRoutes(t *testing.T) {
 	}
 }
 
+// wireShape is the value this service advertises, written down.
+//
+// A golden constant rather than only a stability check, and the reason is the
+// move that brought proto/ into this repository. `garm catalogue build`
+// computes this same hash from its own copy of the descriptors, and garmd
+// refuses to route to a service whose value differs from the catalogue's — so
+// the two are one number agreed between two repositories, and the only thing
+// that can keep them agreeing is writing it down on both sides.
+//
+// This value is the one `github.com/garm-ai/contracts` v0.5.0 produced, before
+// the proto moved here. It did not move with the proto, because `go_package`
+// is an option and DescriptorHash reads no option; that is what lets the
+// package exist in two modules during the switchover without quarantining a
+// deployment. See KNOWN-GAPS.md.
+//
+// If a change to the proto moves it, that is a real answer and not a broken
+// test: update this constant, and expect every catalogue that carries
+// garm.tasks.v1 to be rebuilt.
+const wireShape = "3a9113cd588ab3d2474ffdaaefb95bae7760dfbdcf72dcc88528b57b5101ff69"
+
 // The wire shape is what a daemon compares with the catalogue before it
-// routes anything here. It has to be stable across runs of the same build:
-// a value that moved would quarantine the service for no reason.
+// routes anything here. It has to be the agreed value, and it has to be
+// stable across runs of the same build: a value that moved would quarantine
+// the service for no reason.
 func TestTheWireShapeIsStable(t *testing.T) {
 	first, err := tasks.DescriptorHash()
 	if err != nil {
@@ -57,6 +78,9 @@ func TestTheWireShapeIsStable(t *testing.T) {
 	}
 	if len(first) != 64 {
 		t.Fatalf("the wire shape is %q, want 64 hex characters", first)
+	}
+	if first != wireShape {
+		t.Errorf("the wire shape is %q, want %q — see the constant's comment before changing it", first, wireShape)
 	}
 	second, err := tasks.DescriptorHash()
 	if err != nil {

@@ -10,7 +10,8 @@ import (
 	"github.com/garm-ai/tool-go/toolbind"
 
 	cardv1 "github.com/garm-ai/contracts/garm/card/v1"
-	tasksv1 "github.com/garm-ai/contracts/garm/tasks/v1"
+
+	tasksv1 "github.com/garm-ai/tasksd/gen/garm/tasks/v1"
 )
 
 // Register mounts every tool the contract declares on a runtime.

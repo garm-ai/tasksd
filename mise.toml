@@ -7,6 +7,93 @@
 
 [tools]
 go = "1.26"
+# buf, because this repository owns a contract now: `garm.tasks.v1` is under
+# proto/ and the Go under gen/ is generated from it rather than imported from
+# somewhere else.
+buf = "1"
+
+[tasks.gen]
+description = "Regenerate Go from the contract"
+# proto/ only; buf.gen.yaml says why third_party/proto must never be
+# generated. It is one line because there is one template and one package.
+run = "buf generate"
+
+[tasks."gen-check"]
+description = "Fail if the committed generated code is stale"
+# Generated code is COMMITTED, because a Go module has to build from its own
+# source: a consumer runs `go build`, not buf and a remote plugin. The cost of
+# committing is drift, and this is the check that pays it — and it matters more
+# here than in a repository that only consumes a contract, because what gen/
+# says is what this service ADVERTISES. A stale gen/ is a descriptor hash that
+# does not match the proto anybody reads, and the symptom is a daemon
+# quarantining the service with a mismatch nobody can reproduce from the file.
+#
+# A generated file that exists but was never added is stale the same way, so
+# the untracked check is there beside the diff. `ls-files --others`, not
+# `status`: status folds an untracked directory into one "?? gen/" line that no
+# pathspec under it matches, and lists staged files too, which are not stale.
+#
+# Scoped to gen/ on purpose. Checking the whole tree would fail on any
+# unrelated edit in the working directory, which is right in CI and misleading
+# everywhere else — and a check that cries wolf locally is one people stop
+# running before they push.
+#
+# wait_for, not depends: mise runs dependencies in parallel, and `buf generate`
+# rewriting a .pb.go while `go build` reads it is a flaky red.
+wait_for = ["build", "test", "lint"]
+run = """
+mise run gen
+if ! git diff --quiet -- gen; then
+  echo "generated code is stale — run 'mise run gen' and commit:" >&2
+  git diff --stat -- gen >&2
+  exit 1
+fi
+untracked=$(git ls-files --others --exclude-standard -- gen)
+if [ -n "$untracked" ]; then
+  echo "generated code is untracked — run 'git add' on:" >&2
+  printf '%s\\n' "$untracked" >&2
+  exit 1
+fi
+echo "ok: gen/ matches proto/"
+"""
+
+[tasks."buf-lint"]
+description = "Lint the contract"
+run = "buf lint"
+
+[tasks.breaking]
+description = "Fail if the contract broke against the last release"
+# This repository publishes a contract, so it owes consumers the check the
+# contract module owes them. Against the LATEST TAG rather than main: main is
+# where a breaking change lands deliberately with a version bump beside it, and
+# the question worth asking is whether what people have already pinned still
+# means what it meant.
+#
+# No tag yet is not a failure — a fresh clone with no tags has nothing to
+# compare against — but a tag that exists and a comparison that fails is the
+# real signal.
+#
+# Nor is a tag from before this repository owned a contract. Every release up
+# to v0.2.1 has no proto/ at all, and `buf breaking` against one of those does
+# not report a break, it reports `Module had no .proto files` and exits 1 —
+# which is a check failing because it cannot run, and the most reliable way to
+# get a check deleted. So the tree is asked whether the tag has protos before
+# the comparison is attempted, and the check turns itself on at the first
+# release that carries them.
+run = """
+set -e
+tag="$(git tag --sort=-v:refname | head -1)"
+if [ -z "$tag" ]; then
+  echo "no tag to compare against; the check turns on with the first release"
+  exit 0
+fi
+if ! git ls-tree -r --name-only "$tag" -- proto | grep -q '\\.proto$'; then
+  echo "$tag predates this repository owning a contract; nothing to compare against"
+  exit 0
+fi
+echo "== buf breaking --against $tag"
+buf breaking --against ".git#tag=$tag"
+"""
 
 [tasks.build]
 description = "Build every package"
@@ -30,7 +117,17 @@ description = "Vet the Go"
 run = "go vet ./..."
 
 [tasks.fmt]
-description = "Format"
+description = "Format the Go"
+# Go only, and no `buf format -w`. The protos here are kept byte for byte as
+# they arrived from `github.com/garm-ai/contracts` v0.5.0 — the contract apart
+# from its `go_package` and its header comment, and the three vendored files
+# under third_party/proto exactly. `diff` against that tag is how somebody
+# checks the descriptor-hash claim in KNOWN-GAPS.md instead of taking it on
+# trust, and reformatting would spend that for nothing: buf's formatter moves
+# the option and import order and reflows every message option in all four
+# files, and none of it reaches a descriptor. There is nothing to reformat once
+# the contract module's copy is gone either, since the file will not have
+# changed.
 run = "go fmt ./..."
 
 [tasks."fmt-check"]
@@ -160,6 +257,76 @@ fi
 echo "ok: the contracts' old module is in neither build graph"
 """
 
+[tasks."one-tasks-contract"]
+description = "Fail if the contract module's copy of garm.tasks.v1 is back in the graph"
+# `garm.tasks.v1` moved out of `github.com/garm-ai/contracts` and into this
+# repository, and until the switchover lands there it exists in BOTH modules.
+# That is safe for exactly one reason: nothing links both. The two copies
+# register the same descriptor file path, `garm/tasks/v1/tasks.proto`, so a
+# binary that reaches both dies in `protoregistry` during package init —
+# builds, vets, links, and then does not start. This is the check that keeps
+# the reason true rather than remembered, and it retires when the package is
+# gone from the contract module.
+#
+# It is deliberately narrow. This repository still REQUIRES that module, for
+# `garm/tool/v1`, `garm/card/v1`, `wire`, `callctx`, `grant` and `grants`, and
+# gen/garm/tasks/v1 imports three of those itself — so the module path is not
+# what is forbidden, one package under it is.
+#
+# Same two graphs and the same `go list` lesson as `no-old-contracts`: the
+# assignment is on its own line with its exit code checked first, because a
+# `go list` that fails inside an `if` reads as a clean check; the empty-output
+# guard covers a `go list` that succeeds and prints nothing; and `-test ./...`
+# is read as well as `./...`, because a duplicate registration panics in init
+# and so kills a test binary before it reaches a test function.
+run = """
+found=0
+for graph in "./..." "-test ./..."; do
+  deps=$(go list -deps $graph) || exit 1
+  if [ -z "$deps" ]; then
+    echo "go list -deps $graph printed nothing; that is a broken check, not a clean one" >&2
+    exit 1
+  fi
+  bad=$(printf '%s\\n' "$deps" | grep -E '^github\\.com/garm-ai/contracts/garm/tasks/v1$' || true)
+  if [ -n "$bad" ]; then
+    found=1
+    echo "reachable under: go list -deps $graph" >&2
+    printf '%s\\n' "$bad" | sed 's|^|  |' >&2
+  fi
+done
+if [ "$found" -eq 1 ]; then
+  cat >&2 <<'WHY'
+
+The contract module's copy of garm.tasks.v1 is back in tasksd's build graph.
+
+This repository owns that package now: proto/garm/tasks/v1/tasks.proto,
+generated into gen/garm/tasks/v1. Until the switchover removes it from
+github.com/garm-ai/contracts the package exists in two modules, and a process
+that links both registers the same descriptor file twice:
+
+  panic: proto: file "garm/tasks/v1/tasks.proto" is already registered
+
+So the symptom is a binary that builds, passes every test that does not link
+both, and then dies at startup before main.
+
+To fix it, move the import rather than this check:
+
+  * github.com/garm-ai/contracts/garm/tasks/v1 becomes
+    github.com/garm-ai/tasksd/gen/garm/tasks/v1 — the same Go package name,
+    tasksv1, so the call sites do not change
+  * if it arrived transitively, `go mod why -m` and
+    `go list -deps -test ./...` name the consumer that pulls it
+
+Every other package under github.com/garm-ai/contracts is fine and expected:
+garm/tool/v1, garm/card/v1, wire, callctx, grant and grants all still come
+from there, and gen/garm/tasks/v1 imports three of them itself.
+
+WHY
+  exit 1
+fi
+echo "ok: one copy of garm.tasks.v1 in the build graph, and it is this repository's"
+"""
+
 [tasks."no-replace"]
 description = "Fail on a replace directive"
 # Every dependency is a real, resolvable version. A replace pointing at a
@@ -174,4 +341,17 @@ echo "ok: no replace directive"
 
 [tasks.ci]
 description = "Everything CI runs"
-depends = ["fmt-check", "lint", "build", "test", "tidy-check", "no-enforcement", "no-old-contracts", "no-replace"]
+depends = [
+  "fmt-check",
+  "lint",
+  "buf-lint",
+  "build",
+  "test",
+  "gen-check",
+  "breaking",
+  "tidy-check",
+  "no-enforcement",
+  "no-old-contracts",
+  "one-tasks-contract",
+  "no-replace",
+]

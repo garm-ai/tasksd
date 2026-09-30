@@ -25,21 +25,78 @@ bottom is already too long.
 can be released by anybody, which is what unblocks the task. The row still
 says `CLAIMED` until somebody does that or until the task expires.
 
+## Mid-transition
+
+**`garm.tasks.v1` exists in two modules, and that is deliberate.** The proto
+is `proto/garm/tasks/v1/tasks.proto` here, taken from
+`github.com/garm-ai/contracts` v0.5.0 — and it is still in that module too,
+because removing it there is a separate step in a quiet tree. Somebody reading
+this mid-transition should not be alarmed, and here is exactly why.
+
+*Nothing links both.* The two copies register the same descriptor file path,
+`garm/tasks/v1/tasks.proto`, and a process reaching both panics in
+`protoregistry` during package init — it builds, vets, links and then does not
+start. This repository imports its own copy and no longer imports the contract
+module's, in either the shipped graph or the `-test` one, and
+`mise run one-tasks-contract` is what keeps that true rather than remembered.
+The module requirement stays, because `garm/tool/v1`, `garm/card/v1`,
+`garm/meta/v1`, `wire`, `callctx`, `grant` and `grants` all still come from it
+— so what is forbidden is one package under that module, not the module.
+
+*The catalogue still matches.* A deployment's catalogue currently declares the
+contract module's copy while this service serves its own. The two differ in
+exactly one thing that reaches the descriptor, the `go_package` option, and
+`DescriptorHash` — which garmd's `internal/serve/reconcile.go` compares at
+mount and `internal/tasks/contract.go` computes here — hashes message full
+names, field numbers, field names, cardinalities and kinds, and reads no
+option. That was verified against garm's `internal/compiler/emit_micro.go`
+rather than assumed, and the value is written down in
+`internal/tasks/contract_test.go` so it cannot move unnoticed: it is
+`3a9113cd…ff69` before the move and after it. So nothing quarantines.
+
+*What is left.* Two steps, neither of them this repository's:
+
+1. `garm.tasks.v1` comes out of `github.com/garm-ai/contracts` — the proto,
+   the generated Go and the lint exemptions — and the CLI's blank import of it
+   goes with it. That is when the duplication ends and
+   `mise run one-tasks-contract` becomes a check about the past.
+2. The bank example's `catalogue.yaml` names `module:
+   github.com/garm-ai/tasksd` instead of `github.com/garm-ai/contracts` for
+   that package. One line, and the recorded provenance is then the version
+   that produced the bytes, which is the truthfulness bug the move closes.
+
+Until (1), a consumer that wants the task tools may reach either copy and get
+the same wire shape. After it, there is one.
+
 ## Where a check is thinner than the design
 
-**The wire shape this service advertises is computed here.** A daemon
-compares what a service advertises with what the catalogue declares, and
-refuses to route when they differ. The value is derived from the linked
-contract by `internal/tasks/contract.go`, using the encoding
-`garm catalogue build` stamps — written here because that function is
-`garm`'s own unexported `internal/compiler` and no generated binding for this
-contract exists yet. `github.com/garm-ai/contracts` v0.2.0 exports nothing
-that supersedes it: the module carries the descriptor-hash *field* on
-`garm.catalogue.v1.Catalogue` and no function that computes one. That module
-is still the right home — beside `grants`, which both sides already share —
-and this becomes an import when it lands there. Until then the golden test
-beside it is what pins the encoding, and a mismatch is loud rather than
-silent: the daemon refuses to route and says which package and why.
+**The wire shape this service advertises is computed here, and owning the
+proto did not change that.** A daemon compares what a service advertises with
+what the catalogue declares, and refuses to route when they differ. The value
+is derived from the contract by `internal/tasks/contract.go`, using the
+encoding `garm catalogue build` stamps.
+
+Owning the proto was the obvious candidate for closing this and it does not,
+for two reasons worth writing down. The generator that would emit the constant,
+`cmd/protoc-gen-garm-go`, lives in the command line tool's repository, so
+adding it to `buf.gen.yaml` would buy a table this service already derives at
+run time from the same annotations — at the price of a build-time dependency on
+that repository. And the function itself, `descriptorHash` in garm's
+`internal/compiler/emit_micro.go`, is unexported in another module's
+`internal/` package, which no amount of owning a proto reaches.
+
+So the answer is unchanged and the right home is unchanged: a hash that a
+producer and a consumer must agree on belongs in the module they share,
+`github.com/garm-ai/contracts`, beside `grants` — which both this service and
+the daemon already import. v0.5.0 still exports nothing that supersedes it: the
+module carries the descriptor-hash *field* on `garm.catalogue.v1.Catalogue` and
+no function that computes one. This becomes an import when it lands there.
+
+What did change is that the value is now pinned rather than only checked for
+stability. `internal/tasks/contract_test.go` holds it as a constant, because
+the number is agreed between two repositories and writing it down on both sides
+is the only thing that can keep them agreeing. A mismatch is loud rather than
+silent either way: the daemon refuses to route and says which package and why.
 
 **A triage decline is a decision made outside the claim.** `triage_task`
 admits a person and an agent, and a DECLINE through it refuses the requester

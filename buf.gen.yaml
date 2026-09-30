@@ -1,0 +1,27 @@
+version: v2
+# proto/ only. third_party/proto is in the workspace so the imports resolve,
+# and must never be generated: the Go for `garm.tool.v1`, `garm.card.v1` and
+# `garm.meta.v1` comes from github.com/garm-ai/contracts, and a second copy
+# registering the same descriptor file paths panics in `protoregistry` during
+# package init — a binary that builds, vets, links and then does not start.
+inputs:
+  - directory: proto
+
+plugins:
+  # Pinned, not floating. The drift check regenerates and compares, so a
+  # plugin that changed under us would report the proto as stale when nothing
+  # about the proto moved. The version tracks google.golang.org/protobuf in
+  # go.mod; bump the two together.
+  - remote: buf.build/protocolbuffers/go:v1.36.12
+    out: gen
+    opt: paths=source_relative
+    include_imports: false
+  # No micro binding plugin, and no connect plugin. `protoc-gen-garm-go` is in
+  # the command line tool's repository and emits a Handler interface and a
+  # DescriptorHash constant off the tool annotations; this service registers
+  # its eight handlers by reading those annotations at run time instead
+  # (internal/tasks/contract.go), which is what keeps the routing table from
+  # drifting from the declaration. Adding the plugin would mean a build-time
+  # dependency on that repository for a table this one already derives.
+  # KNOWN-GAPS.md carries what that costs: the hash encoding is copied rather
+  # than imported.

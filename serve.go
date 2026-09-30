@@ -66,15 +66,24 @@ type Config struct {
 	Log *slog.Logger
 }
 
-// ContractVersion is the version of github.com/garm-ai/contracts this build
-// links, advertised beside the wire shape so a daemon can tell which
-// contract this process implements.
+// ContractVersion is the version of `garm.tasks.v1` this build serves,
+// advertised beside the wire shape so a deployment can tell which contract
+// this process implements.
 //
-// Keep it in step with the version in go.mod. It moved from garm's own
-// version when the contracts left that repository and became a module of
-// their own; what a daemon compares it against is the catalogue, which is
-// built from the same module.
-const ContractVersion = "v0.2.0"
+// It is THIS repository's release now, and keeping it in step with the tag is
+// the whole of the rule. It has said three things in three months, which is
+// the history worth knowing: garm's version, while the contract was a file in
+// the command line tool; `github.com/garm-ai/contracts`' version, while it was
+// one service API in a module of platform vocabularies; and now this
+// repository's, because the proto is under proto/ here and nowhere else is it
+// published from.
+//
+// What a daemon actually reconciles is the descriptor hash, not this string —
+// garmd's internal/serve/reconcile.go compares DescriptorHashes from the
+// catalogue and nothing else. So this is for a person reading `$SRV.INFO` and
+// a ledger row, and a wrong value here misleads rather than quarantines, which
+// is the more expensive kind of wrong.
+const ContractVersion = "v0.3.0"
 
 // defaultSweep is how often expiry runs when the caller names no interval.
 const defaultSweep = time.Minute

@@ -1,0 +1,418 @@
+// The tasks tool: a queue, a claim, a decision and a triage, each an ordinary
+// governed call.
+//
+// This is a CONTRACT, and it lives with the service that answers it. The
+// package name keeps the `garm.` prefix because that prefix means "part of
+// this platform's vocabulary", which a must-have service's API still is; a
+// repository need not match the packages it holds, and `tools/web` holds
+// `web.v1` for the same reason. It used to live in
+// `github.com/garm-ai/contracts` beside the annotations, which was the one
+// service API in a module of vocabularies — and being the module the command
+// line tool links, it made the CLI's bytes authoritative over the tree's
+// pinned version. It moved here in September 2026; see the decision record
+// named in README.md.
+//
+// `tasksd` serves it, and nothing else does. Everything that calls it — the
+// daemon routing to it, a catalogue that carries it, a client rendering a
+// card — reads this file's descriptor rather than a second copy, so the thing
+// that serves it and the things that call it cannot drift apart.
+//
+// Why a task is a tool at all. The queue, the claim, the decision and the
+// triage are calls a person or an agent makes. Held inside a runner, as the
+// MVP held them, each one is an HTTP route with its own ad-hoc check, no
+// ledger row, no clearance, and no way for an agent to work a queue at all.
+// Served as tools, every one of them gets the ten steps, a ledger row under
+// the caller, a declared clearance, an audience, and the same `act` rule the
+// grant already has. The payoff is in TriageTask: an agent can be ON a queue
+// without being able to say yes.
+//
+// Every method is PUBLIC at the method gate, and that is on purpose. WHICH
+// task a viewer may see is decided per task by the label on its card, not per
+// method; a method-level gate would have to be the lowest predicate any tool
+// in the deployment declares, which is no gate at all. The per-row answer is
+// the card's, projected by the daemon.
+syntax = "proto3";
+
+package garm.tasks.v1;
+
+import "buf/validate/validate.proto";
+import "garm/card/v1/card.proto";
+import "garm/meta/v1/meta.proto";
+import "garm/tool/v1/tool.proto";
+import "google/protobuf/any.proto";
+import "google/protobuf/timestamp.proto";
+
+// The generated Go lives under gen/, beside the proto that produced it, and
+// the package name stays `tasksv1` so every import site reads the same as it
+// did in the contract module.
+//
+// This option is the only thing REACHING THE DESCRIPTOR that differs between
+// this file and the copy at `contracts` v0.5.0 it was taken from — the comment
+// above differs too, and a comment is not in the descriptor. Everything else
+// is byte for byte, which is deliberate and worth keeping: `diff` against that
+// tag is how somebody checks the claim rather than taking it on trust, and it
+// is why this file is not run through `buf format` (neither is the copy it came
+// from). The claim that matters is that `DescriptorHash` reads field numbers,
+// names, cardinalities and kinds and never an option, so the wire shape both
+// copies advertise is the same value and a deployment mid-transition does not
+// quarantine. KNOWN-GAPS.md carries the rest of that reasoning.
+option go_package = "github.com/garm-ai/tasksd/gen/garm/tasks/v1;tasksv1";
+
+// One set, not three. An earlier revision of the design kept `runner` and
+// `studio` sets here to keep a model away from create_task and decide_task;
+// audience does that now, per tool, and a set goes back to what a set is for:
+// grouping tools by domain and deciding who holds them. `triage` is a real
+// set — an agent's manifest lists it or does not.
+option (garm.tool.v1.tool_sets) = {
+  declared: [{ name: "triage" description: "Task triage, offered to an agent whose manifest lists it." }]
+};
+
+service TasksService {
+  option (garm.meta.v1.owner) = { team: "agent-platform" contact: "#agent-platform" };
+
+  // A runner opens a task for the run it is executing. The principal is the
+  // requester (the run's subject); the chain carries the agent; exec names
+  // the runner. The run id is attribution.run_id; the tenant is
+  // attribution.tenant, and never a request field.
+  rpc CreateTask(CreateTaskRequest) returns (CreateTaskResponse) {
+    option (garm.tool.v1.tool) = {
+      name: "create_task"
+      title: "Open a task"
+      description: "Open an approval or a question for a person, on behalf of a run."
+      verb: VERB_WRITE
+      min_clearance: CLEARANCE_PUBLIC
+      audience: [AUDIENCE_RUNNER]
+      approval: { mode: MODE_NONE }
+      effects: { idempotent: true reversibility: REVERSIBILITY_FULL }
+    };
+  }
+
+  // The queue: a list of cards, projected per card. A viewer outside a task's
+  // predicate never sees that card, so the list a person pages IS what they
+  // may act on.
+  rpc ListTasks(ListTasksRequest) returns (ListTasksResponse) {
+    option (garm.tool.v1.tool) = {
+      name: "list_tasks"
+      title: "List tasks"
+      description: "The queue, your own, or what is done."
+      verb: VERB_READ
+      min_clearance: CLEARANCE_PUBLIC
+      audience: [AUDIENCE_PERSON, AUDIENCE_AGENT]
+      sets: ["triage"]
+      approval: { mode: MODE_NONE }
+      guidance: {
+        when_to_use: "To read the tasks in your queue before triaging one."
+      }
+    };
+  }
+
+  // The typed frame plus the card.
+  rpc GetTask(garm.card.v1.TaskRef) returns (Task) {
+    option (garm.tool.v1.tool) = {
+      name: "get_task"
+      title: "Read a task"
+      description: "One task: its state, its history, and the card for this viewer."
+      verb: VERB_READ
+      min_clearance: CLEARANCE_PUBLIC
+      audience: [AUDIENCE_PERSON, AUDIENCE_AGENT]
+      sets: ["triage"]
+      approval: { mode: MODE_NONE }
+    };
+  }
+
+  // The frame a person's client renders for a task of any kind: title, state,
+  // the requester and the run, the audit trail, the decision message's inputs,
+  // and a Material section carrying the values the digest is computed from.
+  // The target tool's own approval card is the second card on that page, and
+  // it is help; the decision is about the material.
+  rpc ApprovalCard(garm.card.v1.TaskRef) returns (garm.card.v1.Card) {
+    option (garm.tool.v1.tool) = {
+      name: "approval_card"
+      title: "The task card"
+      description: "The frame a person decides from."
+      verb: VERB_READ
+      min_clearance: CLEARANCE_PUBLIC
+      audience: [AUDIENCE_PERSON]
+      // `triage`, for the same reason as decide_task and inseparably from it:
+      // an approver who may decide and may not read the card they are deciding
+      // from has been granted nothing usable.
+      sets: ["triage"]
+      approval: { mode: MODE_NONE }
+      audit: { level: LEVEL_LEDGER record_request: false record_response: false }
+    };
+  }
+
+  rpc ClaimTask(garm.card.v1.TaskRef) returns (Task) {
+    option (garm.tool.v1.tool) = {
+      name: "claim_task"
+      title: "Claim a task"
+      description: "Take a task out of the shared queue."
+      verb: VERB_WRITE
+      min_clearance: CLEARANCE_PUBLIC
+      audience: [AUDIENCE_PERSON, AUDIENCE_AGENT]
+      sets: ["triage"]
+      approval: { mode: MODE_NONE }
+      effects: { idempotent: true reversibility: REVERSIBILITY_FULL }
+    };
+  }
+
+  rpc ReleaseTask(garm.card.v1.TaskRef) returns (Task) {
+    option (garm.tool.v1.tool) = {
+      name: "release_task"
+      title: "Release a task"
+      description: "Put a claimed task back."
+      verb: VERB_WRITE
+      min_clearance: CLEARANCE_PUBLIC
+      audience: [AUDIENCE_PERSON, AUDIENCE_AGENT]
+      sets: ["triage"]
+      approval: { mode: MODE_NONE }
+      effects: { idempotent: true reversibility: REVERSIBILITY_FULL }
+    };
+  }
+
+  // A PERSON decides. Refused when the invocation chain carries `act`: the
+  // thing about to act cannot say yes to itself. That refusal is made in
+  // three places — the STS will not mint from a delegated token, this service
+  // refuses a delegated caller and a grant carrying `act`, and the daemon
+  // refuses to verify one — so the rule survives one of them being wrong.
+  rpc DecideTask(DecideTaskRequest) returns (Task) {
+    option (garm.tool.v1.tool) = {
+      name: "decide_task"
+      title: "Decide a task"
+      description: "Approve, decline or answer. A person only."
+      verb: VERB_WRITE
+      min_clearance: CLEARANCE_PUBLIC
+      audience: [AUDIENCE_PERSON]
+      // `triage`, the same set claim_task carries, because claiming and
+      // deciding are two halves of one act: the decision requires the claim,
+      // so a caller granted one and not the other can reach a queue and do
+      // nothing with it.
+      //
+      // Declaring no set at all was the original reading and it was wrong. A
+      // TOOL in no set is reachable only by a caller in no set — garmd's
+      // `inScope` refuses a scoped caller any tool that shares none of its
+      // sets — so every role that names a set was refused this method, and in
+      // the bank example that is every role but the customer's. The audience
+      // above narrows who is OFFERED the tool and does not gate who may call
+      // it; the `act` refusal below is what keeps a delegated caller out.
+      sets: ["triage"]
+      approval: { mode: MODE_NONE }
+      effects: { idempotent: true reversibility: REVERSIBILITY_NONE }
+      audit: { level: LEVEL_AUDIT record_request: false retain_days: 2555 fail_closed: true }
+    };
+  }
+
+  // An agent (or a person) works on a task without deciding it.
+  //
+  // This is the payoff of a task being a tool. A triage agent may recommend,
+  // comment, reassign to a STRICTER predicate, or decline with a reason — and
+  // may never approve. A `recommendation: APPROVE` is recorded and not acted
+  // on. The sponsor accepted that a no is cheap to reverse, since the run may
+  // ask again, where a yes is not.
+  rpc TriageTask(TriageTaskRequest) returns (Task) {
+    option (garm.tool.v1.tool) = {
+      name: "triage_task"
+      title: "Triage a task"
+      description: "Recommend, comment, reassign or decline a task. You cannot approve."
+      verb: VERB_WRITE
+      min_clearance: CLEARANCE_PUBLIC
+      audience: [AUDIENCE_AGENT, AUDIENCE_PERSON]
+      sets: ["triage"]
+      approval: { mode: MODE_NONE }
+      // A triage is undone by another triage: a reassignment by a
+      // reassignment, a recommendation by a later one. The exception is a
+      // DECLINE, which decides the task — and that asymmetry is the whole
+      // reason an agent may say no here and never yes. A no is cheap to
+      // reverse, because the run may ask again; a yes is not.
+      effects: {
+        idempotent: true
+        reversibility: REVERSIBILITY_COMPENSABLE
+        compensating_tool: "triage_task"
+      }
+      guidance: {
+        when_to_use: "To recommend, comment, reassign or decline a task in your queue. You cannot approve."
+        when_not_to_use: "To approve anything. There is no path here that approves."
+      }
+    };
+  }
+}
+
+// ---------------------------------------------------------------- vocabulary
+
+enum Kind {
+  KIND_UNSPECIFIED = 0;
+  APPROVAL = 1;   // a decision that mints a grant
+  ASK = 2;        // a question put to a person that is not an approval
+}
+
+enum State {
+  STATE_UNSPECIFIED = 0;
+  OPEN = 1;
+  CLAIMED = 2;
+  APPROVED = 3;
+  DECLINED = 4;
+  ANSWERED = 5;
+  EXPIRED = 6;
+}
+
+enum Decision {
+  DECISION_UNSPECIFIED = 0;
+  APPROVE = 1;
+  DECLINE = 2;
+  ANSWER = 3;
+}
+
+// Who may see and decide this task: the tool's approval block, or the
+// manifest's approver block. Stored per task, because the tool that opened it
+// may be gone from the catalogue by the time it is decided.
+message Predicate {
+  option (garm.tool.v1.default_field_policy) = { read: CLEARANCE_PUBLIC on_deny: { omit: {} } };
+  optional garm.tool.v1.Clearance min_clearance = 1;
+  repeated string compartments = 2;
+}
+
+// ---------------------------------------------------------------- messages
+//
+// Field policies here are flat and PUBLIC, and that is not laziness. The
+// per-row policy lives on the card and its elements, where it can differ per
+// task; a field policy is per descriptor and cannot. The two fields with a
+// static RESTRICTED read policy are the ones whose value is data for a
+// machine rather than something a person reads: the runner reads an answer as
+// the agent, and nothing reads a grant back.
+
+message CreateTaskRequest {
+  option (garm.tool.v1.default_field_policy) = { read: CLEARANCE_PUBLIC on_deny: { omit: {} } };
+  optional Kind kind = 1 [(buf.validate.field).enum.defined_only = true];
+  optional string tool = 2 [(buf.validate.field).string.max_len = 200];      // FQN of the target tool; empty for ASK
+  optional string subject = 3 [(buf.validate.field).string.max_len = 200];   // the grant's subject
+  map<string, string> material = 4;                                          // dotted path -> canonical text; the digest's input
+  Predicate predicate = 5;
+  optional uint32 expires_in_seconds = 6 [(buf.validate.field).uint32 = { gt: 0, lte: 604800 }];
+  optional string decision_type = 7 [(buf.validate.field).string.max_len = 200];  // FQN of the decision message in the pinned generation
+  optional string question = 8 [(buf.validate.field).string.max_len = 2000];      // ASK only, plain text
+  optional string catalogue_digest = 9;
+}
+
+message CreateTaskResponse {
+  option (garm.tool.v1.default_field_policy) = { read: CLEARANCE_PUBLIC on_deny: { omit: {} } };
+  optional string task_id = 1;
+}
+
+message ListTasksRequest {
+  option (garm.tool.v1.default_field_policy) = { read: CLEARANCE_PUBLIC on_deny: { omit: {} } };
+  enum View {
+    VIEW_UNSPECIFIED = 0;
+    QUEUE = 1;   // open, not mine to ask, not claimed by someone else
+    MINE = 2;    // requested by me or claimed by me
+    DONE = 3;    // terminal
+  }
+  optional View view = 1;
+  optional string cursor = 2;
+  optional uint32 page_size = 3 [(buf.validate.field).uint32.lte = 100];
+}
+
+message ListTasksResponse {
+  option (garm.tool.v1.default_field_policy) = { read: CLEARANCE_PUBLIC on_deny: { omit: {} } };
+  // Summary cards: title, state, kind, requester, expiry, owner — no
+  // material. Each is labelled at its own task's predicate, so the daemon
+  // drops the ones this viewer does not reach and the queue a person pages is
+  // the queue they may act on.
+  repeated garm.card.v1.Card cards = 1;
+  optional string cursor = 2;
+}
+
+message Task {
+  option (garm.tool.v1.default_field_policy) = { read: CLEARANCE_PUBLIC on_deny: { omit: {} } };
+  optional string task_id = 1;
+  optional Kind kind = 2;
+  optional State state = 3;
+  optional string tool = 4;
+  optional string subject = 5;
+  optional string requester = 6;
+  optional string run_id = 7;
+  Predicate predicate = 8;
+  optional string claimant = 9;
+  optional string decided_by = 10;
+  optional Decision decision = 11;
+  optional string reason = 12;
+  optional string grant_jti = 13;
+  google.protobuf.Timestamp created_at = 14;
+  google.protobuf.Timestamp expires_at = 15;
+  google.protobuf.Timestamp decided_at = 16;
+  repeated Event events = 17;
+  repeated Triage triage = 18;   // recommendations and comments so far
+
+  // The approval card, labelled per task. Withheld whole from a viewer
+  // outside the predicate: the requester sees that a decision is pending and
+  // not what the approver sees.
+  garm.card.v1.Card card = 20;
+
+  // ASK only: the decision message as answered. RESTRICTED because it is read
+  // by the runner AS the run's agent and rendered to a model as a typed tool
+  // result — never a person's free text pasted into a prompt.
+  google.protobuf.Any answer = 21 [(garm.tool.v1.field_policy) = { read: CLEARANCE_RESTRICTED on_deny: { omit: {} } }];
+}
+
+message DecideTaskRequest {
+  option (garm.tool.v1.default_field_policy) = { read: CLEARANCE_PUBLIC on_deny: { omit: {} } };
+  optional string task_id = 1 [(buf.validate.field).required = true];
+  optional Decision decision = 2 [(buf.validate.field).enum = { in: [1, 2, 3] }];
+  optional string reason = 3 [(buf.validate.field).string = { min_len: 1, max_len: 500 }];
+
+  // APPROVE only: the grant minted at the STS by the deciding person's own
+  // client, with their own bearer. It travels here rather than being minted
+  // by this service, because a token does not cross the hop and a service
+  // minting on a person's behalf would make the STS attest the service's word
+  // instead of the person's.
+  //
+  // RESTRICTED so no projection ever returns it, and the method's audit sets
+  // record_request: false so it is never written down by value. It is
+  // single-use, task-bound and fifteen minutes old at most.
+  optional string grant = 4 [(garm.tool.v1.field_policy) = { read: CLEARANCE_RESTRICTED on_deny: { omit: {} } }];
+
+  // ANSWER only, and any decision message beyond {reason}: the decision
+  // message, coerced from the card's inputs by the client and validated here
+  // against the descriptor the task pinned.
+  google.protobuf.Any answer = 5;
+}
+
+message TriageTaskRequest {
+  option (garm.tool.v1.default_field_policy) = { read: CLEARANCE_PUBLIC on_deny: { omit: {} } };
+  enum Action {
+    ACTION_UNSPECIFIED = 0;
+    RECOMMEND = 1;
+    COMMENT = 2;
+    REASSIGN = 3;
+    DECLINE = 4;
+  }
+  optional string task_id = 1 [(buf.validate.field).required = true];
+  optional Action action = 2 [(buf.validate.field).enum.defined_only = true];
+
+  // RECOMMEND: APPROVE or DECLINE, with the reason below. Recorded, never
+  // acted on — there is no path in this service that turns a recommendation
+  // into a decision.
+  optional Decision recommendation = 3;
+  optional string reason = 4 [(buf.validate.field).string = { min_len: 1, max_len: 2000 }];
+
+  // REASSIGN: a STRICTER predicate only — higher or equal clearance, superset
+  // compartments. An agent may narrow who decides and may never widen it.
+  Predicate reassign_to = 5;
+}
+
+message Triage {
+  option (garm.tool.v1.default_field_policy) = { read: CLEARANCE_PUBLIC on_deny: { omit: {} } };
+  optional string actor = 1;
+  optional TriageTaskRequest.Action action = 2;
+  optional Decision recommendation = 3;
+  optional string reason = 4;
+  google.protobuf.Timestamp at = 5;
+}
+
+message Event {
+  option (garm.tool.v1.default_field_policy) = { read: CLEARANCE_PUBLIC on_deny: { omit: {} } };
+  optional uint32 seq = 1;
+  google.protobuf.Timestamp at = 2;
+  optional string actor = 3;
+  optional string kind = 4;    // created, claimed, released, approved, declined, answered, expired, recommended, commented, reassigned, signalled, signal_failed
+  optional string detail = 5;
+}

@@ -6,9 +6,9 @@ until a person answers it. That is this: a queue of tasks, each one a tool
 call waiting on a decision, with the values the person is being asked about,
 the audience that may answer, and the trail of what happened.
 
-It is a governed tool like any other. The contract lives in
-[contracts](https://github.com/garm-ai/contracts) as `garm.tasks.v1`, the
-service answers over NATS, and every call goes through
+It is a governed tool like any other. The contract is `garm.tasks.v1`, in
+[`proto/`](proto/garm/tasks/v1/tasks.proto) — **this repository owns it and
+publishes it**; the service answers over NATS, and every call goes through
 [garmd](https://github.com/garm-ai/garmd) first — so opening a task, reading
 the queue, claiming one and deciding it are each a governed call with a
 ledger row, a declared clearance and an audience, the same as the payment the
@@ -17,6 +17,7 @@ task is about.
 ## Contents
 
 - [What it does](#what-it-does)
+- [The contract it publishes](#the-contract-it-publishes)
 - [The tools it serves](#the-tools-it-serves)
 - [The rules it enforces](#the-rules-it-enforces)
 - [Running it](#running-it)
@@ -45,6 +46,45 @@ An agent can work the same queue without being able to say yes. It can
 recommend, comment, hand a task to a stricter audience, or decline it with a
 reason. There is no argument to any method here that lets an agent approve.
 
+## The contract it publishes
+
+`garm.tasks.v1` is here, and a deployment that wants the task tools names this
+module:
+
+```
+proto/garm/tasks/v1/tasks.proto        the contract: eight tools, the messages
+                                       and the field policies
+gen/garm/tasks/v1/                     the generated Go, committed
+third_party/proto/garm/                the annotations and the card, vendored
+                                       so the imports resolve — never generated
+```
+
+The import path is `github.com/garm-ai/tasksd/gen/garm/tasks/v1`, Go package
+`tasksv1`. The generated code is committed because a Go module has to build
+from its own source — a consumer runs `go build`, not buf and a remote plugin —
+and `mise run gen-check` is what pays for that by regenerating and refusing a
+`gen/` that has drifted from `proto/`.
+
+**The proto package keeps the `garm.` prefix, and that is not a leftover.**
+The prefix means "part of this platform's vocabulary", which a must-have
+service's API still is, and a repository need not match the packages it holds —
+`garm-ai/tools` holds `web.v1`. Renaming would move every descriptor and every
+digest in the estate for no gain.
+
+It used to live in [contracts](https://github.com/garm-ai/contracts), which was
+the one place a single service's API sat in a module of platform vocabularies —
+and because that module is the one the `garm` command line tool links, the
+bytes compiled into a catalogue were the CLI's while the version recorded was
+the tree's. Moving the package out closes that by construction. The decision is
+`decisions/2026-09-30-the-tasks-contract-moves-to-tasksd.md` in
+[`garm-ai/spec`](https://github.com/garm-ai/spec).
+
+`garm.tasks.v1` is published from **both** modules for the moment, because the
+removal from `contracts` is a separate, later step. Nothing links both — no
+binary and no test binary here reaches the contract module's copy, and
+`mise run one-tasks-contract` fails the build if one ever does. `KNOWN-GAPS.md`
+says what makes the overlap safe and what is left to do.
+
 ## The tools it serves
 
 | Tool | Who calls it | What it does |
@@ -58,9 +98,12 @@ reason. There is no argument to any method here that lets an agent approve.
 | `decide_task` | a person | Approves, declines or answers |
 | `triage_task` | an agent | Recommends, comments, reassigns or declines — never approves |
 
-Each one is declared in `garm.tasks.v1` with its verb, its clearance and its
-audience. Nothing in this repository decides who may call what; garmd does
-that from the catalogue, before the call arrives.
+Each one is declared in `proto/garm/tasks/v1/tasks.proto` with its verb, its
+clearance and its audience, and the routing table is read off those
+declarations at startup rather than written down — so a renamed tool is a
+build that changes rather than a table somebody has to remember to edit.
+Nothing in this repository decides who may call what; garmd does that from the
+catalogue, before the call arrives.
 
 ## The rules it enforces
 
@@ -186,11 +229,18 @@ there.
 ## Working here
 
 ```
-mise install    the toolchain
+mise install    the toolchain — Go and buf
 mise run pg     a throwaway Postgres, and the POSTGRES_DSN to export
+mise run gen    regenerate gen/ from proto/
 mise run test   the tests
 mise run ci     what CI runs
 ```
+
+`mise run ci` adds `buf-lint`, `gen-check` and `breaking` to the Go checks, and
+three boundary checks: no path to the daemon or to a token minter, no path back
+to `github.com/garm-ai/garm` — the module the contracts left, which registers
+the same descriptor files — and no second copy of `garm.tasks.v1` in the build
+graph.
 
 The store and wire tests need Postgres and skip without `POSTGRES_DSN`. They
 are not optional — CI always sets it — but a fake Postgres would be testing
