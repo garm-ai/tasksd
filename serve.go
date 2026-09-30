@@ -144,7 +144,12 @@ func Serve(ctx context.Context, cfg Config) error {
 
 	signaller := cfg.Signal
 	if signaller == nil {
-		publisher, err := signal.NewPublisher(nc)
+		// Ensures GARM_TASK_DECISIONS here, at startup, alongside the other
+		// refusals above: a stream that cannot be created or that disagrees
+		// with this build's configuration stops the service before it
+		// advertises itself, rather than leaving every decide_task call to
+		// fail its signal silently once the plane is already serving.
+		publisher, err := signal.NewPublisher(ctx, nc)
 		if err != nil {
 			return err
 		}

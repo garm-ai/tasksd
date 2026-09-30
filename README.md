@@ -211,6 +211,13 @@ twice. A decision that cannot be published stands, and the trail records that
 the run was not told; the run's own waiting window bounds how long it sits
 there.
 
+This service creates the JetStream stream that subject lands on,
+`GARM_TASK_DECISIONS`, itself — at startup, once, idempotently, before it
+advertises itself on the broker. It is the fast path only: the decision above
+is durable in Postgres before this is ever published, so a message this
+stream discards, or a run that never hears, falls back to that run's own
+durable sleep rather than losing the decision.
+
 ## What it does not do
 
 - **It does not mint approvals.** The person's own client does that, against
