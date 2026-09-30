@@ -11,6 +11,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -124,6 +126,8 @@ func diffStreamConfig(want, got jetstream.StreamConfig) []string {
 	cmp("storage", want.Storage, got.Storage)
 	cmp("retention", want.Retention, got.Retention)
 	cmp("discard", want.Discard, got.Discard)
+	cmp("max_age", want.MaxAge, got.MaxAge)
+	cmp("duplicates", want.Duplicates, got.Duplicates)
 	return out
 }
 
@@ -157,22 +161,81 @@ type Payload struct {
 // Publisher sends decisions over JetStream.
 type Publisher struct{ js jetstream.JetStream }
 
-// NewPublisher builds a publisher over a connection, ensuring the stream
-// Signal publishes into exists before returning — see EnsureStream. This is
-// the startup path: Serve calls it once, before the service advertises
-// itself, so a stream that cannot be created or that disagrees with what
-// this build expects stops the service the same way a bad Postgres DSN or an
-// empty grant key set does, rather than surfacing later as every decision
-// silently failing to signal its run.
-func NewPublisher(ctx context.Context, nc *nats.Conn) (*Publisher, error) {
+// NewPublisher builds a publisher over a connection, and tries to ensure the
+// stream Signal publishes into — see EnsureStream. It treats EnsureStream's
+// two kinds of failure differently, and that split is the point of this
+// function.
+//
+// A configuration MISMATCH (ErrStreamPolicyMismatch) is deterministic and
+// deploy-time: the stream is there, with a policy this build did not create,
+// which is exactly the silent-divergence class the missing stream
+// demonstrated once already. That stops the service starting, the same as a
+// bad Postgres DSN or an empty grant key set.
+//
+// Every OTHER failure — JetStream unreachable, not enabled on this account,
+// a transient error creating the stream — must NOT take the service down.
+// Three lines above this is called, Serve connects to NATS with
+// `nats.MaxReconnects(-1)` because "a service that dies because the broker
+// blinked turns a transient outage into a deployment event", and JetStream
+// is the fast path only: the decision this service records is durable in
+// Postgres before Signal is ever called. Refusing to start tasksd because
+// the fast path is unavailable would mean no decide_task, no triage,
+// nothing — this is the only process that does that job — over a dependency
+// every comment in this file calls optional. So this case is logged loudly,
+// at a level an operator would see, and the service starts anyway: every
+// publish attempted before the stream exists takes the same signal_failed
+// path a publish failure already takes after startup, which already tells an
+// operator and records it on the task. A background goroutine keeps retrying
+// EnsureStream so the stream is provisioned the moment the broker recovers,
+// rather than only on the next restart.
+func NewPublisher(ctx context.Context, nc *nats.Conn, log *slog.Logger) (*Publisher, error) {
+	if log == nil {
+		log = slog.New(slog.NewTextHandler(io.Discard, nil))
+	}
 	js, err := jetstream.New(nc)
 	if err != nil {
 		return nil, fmt.Errorf("signal: %w", err)
 	}
 	if _, err := EnsureStream(ctx, js); err != nil {
-		return nil, err
+		if errors.Is(err, ErrStreamPolicyMismatch) {
+			return nil, err
+		}
+		log.Error("could not ensure the decisions stream at startup; starting anyway — "+
+			"every decision until this is resolved falls back to signal_failed and a "+
+			"run's own durable sleep, and this is retried in the background",
+			"stream", StreamName, "err", err)
+		go retryEnsureStream(ctx, js, log)
 	}
 	return &Publisher{js: js}, nil
+}
+
+// retryEnsureStream keeps trying EnsureStream until it succeeds or ctx is
+// cancelled, so a JetStream outage at startup heals itself once the broker
+// comes back rather than waiting for a restart. A configuration mismatch
+// will not resolve itself by retrying, so it is logged once and the loop
+// stops rather than repeating the same refusal forever.
+func retryEnsureStream(ctx context.Context, js jetstream.JetStream, log *slog.Logger) {
+	const retryEvery = 30 * time.Second
+	t := time.NewTicker(retryEvery)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			created, err := EnsureStream(ctx, js)
+			if err == nil {
+				log.Info("the decisions stream is now provisioned", "stream", StreamName, "created", created)
+				return
+			}
+			if errors.Is(err, ErrStreamPolicyMismatch) {
+				log.Error("the decisions stream exists with a configuration this build did not create; stopping the retry",
+					"stream", StreamName, "err", err)
+				return
+			}
+			log.Warn("still could not ensure the decisions stream", "stream", StreamName, "err", err)
+		}
+	}
 }
 
 // Signal publishes one decision.

@@ -1,9 +1,11 @@
 package signal_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -53,12 +55,45 @@ func ctx5(t *testing.T) context.Context {
 	return c
 }
 
+// embeddedNoJetStream is a real, reachable broker with JetStream not
+// enabled — standing in for "the fast path is unavailable" without needing
+// to simulate a network partition: from EnsureStream's side, a request that
+// gets no JetStream API responder looks the same either way, and neither is
+// the stream-not-found case CreateStream is for.
+func embeddedNoJetStream(t *testing.T) *nats.Conn {
+	t.Helper()
+	srv, err := natsserver.NewServer(&natsserver.Options{Port: -1, NoLog: true, NoSigs: true})
+	if err != nil {
+		t.Fatalf("building the embedded server: %v", err)
+	}
+	go srv.Start()
+	t.Cleanup(srv.Shutdown)
+	if !srv.ReadyForConnections(10 * time.Second) {
+		t.Fatal("the embedded server never became ready")
+	}
+	nc, err := nats.Connect(srv.ClientURL(), nats.Timeout(10*time.Second))
+	if err != nil {
+		t.Fatalf("connecting to the embedded server: %v", err)
+	}
+	t.Cleanup(nc.Close)
+	return nc
+}
+
+// capturingLog is what NewPublisher's "started anyway" log line is checked
+// against: a real slog.Logger, so a level or an argument mistake shows up
+// the same way it would over stderr.
+func capturingLog(t *testing.T) (*slog.Logger, *bytes.Buffer) {
+	t.Helper()
+	var buf bytes.Buffer
+	return slog.New(slog.NewTextHandler(&buf, nil)), &buf
+}
+
 // This is the bug, proven directly: before this change, nothing anywhere
 // created GARM_TASK_DECISIONS, so this lookup would report ErrStreamNotFound
 // against a live, JetStream-enabled broker.
 func TestNewPublisherCreatesTheDecisionsStream(t *testing.T) {
 	nc := embedded(t)
-	if _, err := signal.NewPublisher(ctx5(t), nc); err != nil {
+	if _, err := signal.NewPublisher(ctx5(t), nc, nil); err != nil {
 		t.Fatalf("NewPublisher: %v", err)
 	}
 
@@ -92,13 +127,13 @@ func TestNewPublisherCreatesTheDecisionsStream(t *testing.T) {
 // because the stream is already there — and must not create it twice.
 func TestNewPublisherIsIdempotentAcrossRestartsAndConcurrentStartup(t *testing.T) {
 	nc := embedded(t)
-	if _, err := signal.NewPublisher(ctx5(t), nc); err != nil {
+	if _, err := signal.NewPublisher(ctx5(t), nc, nil); err != nil {
 		t.Fatalf("first NewPublisher: %v", err)
 	}
 	// A second, independent connection: what a restarted process, or a
 	// second instance starting at the same time, would do.
 	nc2 := embedded(t)
-	if _, err := signal.NewPublisher(ctx5(t), nc2); err != nil {
+	if _, err := signal.NewPublisher(ctx5(t), nc2, nil); err != nil {
 		t.Fatalf("second NewPublisher against an already-provisioned stream: %v", err)
 	}
 
@@ -181,7 +216,7 @@ func TestEnsureStreamRefusesAWrongConfigurationAndChangesNothing(t *testing.T) {
 // message is actually there, not merely that no error came back.
 func TestASignalledDecisionReachesAConsumerOnTheStream(t *testing.T) {
 	nc := embedded(t)
-	pub, err := signal.NewPublisher(ctx5(t), nc)
+	pub, err := signal.NewPublisher(ctx5(t), nc, nil)
 	if err != nil {
 		t.Fatalf("NewPublisher: %v", err)
 	}
@@ -233,5 +268,97 @@ func TestASignalledDecisionReachesAConsumerOnTheStream(t *testing.T) {
 	if payload.TaskID != sig.TaskID || payload.RunID != sig.RunID || payload.Decision != sig.Decision {
 		t.Errorf("payload = %+v, want it to carry task %q, run %q, decision %q",
 			payload, sig.TaskID, sig.RunID, sig.Decision)
+	}
+}
+
+// The first of the two branches NewPublisher must keep apart: JetStream
+// being unavailable must NOT take the service down. Before this, every
+// EnsureStream failure was treated alike, which meant a stream outage
+// stopped tasksd from starting at all — a worse failure than the signal
+// merely arriving late, for a dependency every comment in jetstream.go calls
+// the fast path only.
+func TestNewPublisherStartsAnywayWhenJetStreamIsUnavailableAndLogsLoudly(t *testing.T) {
+	nc := embeddedNoJetStream(t)
+	log, buf := capturingLog(t)
+
+	pub, err := signal.NewPublisher(ctx5(t), nc, log)
+	if err != nil {
+		t.Fatalf("NewPublisher returned an error with JetStream merely unavailable: %v — "+
+			"this must start anyway and let signal_failed absorb it", err)
+	}
+	if pub == nil {
+		t.Fatal("NewPublisher returned neither an error nor a publisher")
+	}
+	if !strings.Contains(buf.String(), signal.StreamName) || !strings.Contains(buf.String(), "level=ERROR") {
+		t.Errorf("no operator-visible ERROR line naming the stream; got:\n%s", buf.String())
+	}
+}
+
+// The second branch: a genuine configuration mismatch is NOT the same kind
+// of failure as an unreachable broker, and must still stop the service from
+// starting — this is the deterministic, deploy-time case the missing stream
+// already demonstrated once.
+func TestNewPublisherRefusesToStartWhenTheStreamConfigurationHasDrifted(t *testing.T) {
+	nc := embedded(t)
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = js.CreateStream(ctx5(t), jetstream.StreamConfig{
+		Name:      signal.StreamName,
+		Subjects:  []string{signal.SubjectPrefix + ".acme.>"},
+		Storage:   jetstream.FileStorage,
+		Retention: jetstream.LimitsPolicy,
+		Discard:   jetstream.DiscardOld,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = signal.NewPublisher(ctx5(t), nc, nil)
+	if !errors.Is(err, signal.ErrStreamPolicyMismatch) {
+		t.Fatalf("NewPublisher returned %v, want ErrStreamPolicyMismatch — a drifted "+
+			"configuration must stop the service starting", err)
+	}
+}
+
+// Concern from review: Diff only checked four of the policy fields, and
+// MaxAge and Duplicates — the two knobs an operator is most likely to
+// retune — were not among them. A change to either must be caught the same
+// way a lost subject is.
+func TestEnsureStreamDetectsAChangedMaxAge(t *testing.T) {
+	nc := embedded(t)
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := signal.EnsureStream(ctx5(t), js); err != nil {
+		t.Fatalf("provisioning the stream: %v", err)
+	}
+
+	s, err := js.Stream(ctx5(t), signal.StreamName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := s.Info(ctx5(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// What an operator does in response to "this window is too short":
+	// widen MaxAge on the running stream directly, out from under this
+	// package.
+	drifted := info.Config
+	drifted.MaxAge = 7 * 24 * time.Hour
+	if _, err := js.UpdateStream(ctx5(t), drifted); err != nil {
+		t.Fatalf("updating the stream out of band: %v", err)
+	}
+
+	_, err = signal.EnsureStream(ctx5(t), js)
+	if !errors.Is(err, signal.ErrStreamPolicyMismatch) {
+		t.Fatalf("EnsureStream returned %v after MaxAge changed underneath it, want ErrStreamPolicyMismatch — "+
+			"a retention change an operator made is being silently left in force forever", err)
+	}
+	if !strings.Contains(err.Error(), "max_age") {
+		t.Errorf("the refusal does not name max_age: %v", err)
 	}
 }
