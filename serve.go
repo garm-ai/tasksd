@@ -144,7 +144,11 @@ func Serve(ctx context.Context, cfg Config) error {
 
 	signaller := cfg.Signal
 	if signaller == nil {
-		publisher, err := signal.NewPublisher(nc)
+		// Tries to ensure GARM_TASK_DECISIONS here, at startup. Unlike the
+		// refusals above, a JetStream outage does not stop the service: only
+		// a configuration mismatch does. See NewPublisher for why the two
+		// are not the same kind of failure.
+		publisher, err := signal.NewPublisher(ctx, nc, log)
 		if err != nil {
 			return err
 		}

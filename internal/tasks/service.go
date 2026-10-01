@@ -570,7 +570,8 @@ func (s *Service) signal(ctx context.Context, t store.Task, grantToken string) {
 	if err == nil {
 		return
 	}
-	s.log().Error("a decision could not be delivered to its run",
+	s.log().Error("a decision could not be delivered to its run over the fast path; "+
+		"the run now waits for its own durable sleep to wake it instead of being told promptly",
 		"task", t.ID, "run", t.RunID, "err", err)
 	if err := s.DB.AppendEvent(ctx, store.Event{
 		TaskID: t.ID, At: s.now(), Actor: "tasksd", Kind: "signal_failed",
