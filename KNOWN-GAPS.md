@@ -51,8 +51,14 @@ mount and `internal/tasks/contract.go` computes here — hashes message full
 names, field numbers, field names, cardinalities and kinds, and reads no
 option. That was verified against garm's `internal/compiler/emit_micro.go`
 rather than assumed, and the value is written down in
-`internal/tasks/contract_test.go` so it cannot move unnoticed: it is
+`internal/tasks/contract_test.go` so it cannot move unnoticed: it was
 `3a9113cd…ff69` before the move and after it. So nothing quarantines.
+
+The value is **no longer** that one. `requester` on `CreateTaskRequest` moved it
+to `6d981dae…3e50` on 2026-10-01 — a field, which the hash does read — and
+`escalation` on `create_task` did **not** move it again the same day, because a
+tool set is an option. Both repositories carry both changes identically, so the
+two copies still hash alike and the overlap is still safe.
 
 *What is left.* Two steps, neither of them this repository's:
 
@@ -97,6 +103,19 @@ stability. `internal/tasks/contract_test.go` holds it as a constant, because
 the number is agreed between two repositories and writing it down on both sides
 is the only thing that can keep them agreeing. A mismatch is loud rather than
 silent either way: the daemon refuses to route and says which package and why.
+
+**Nothing here can reach a task back on resume with `escalation` alone.**
+`create_task` is in a set of its own so that the runner's service principal can
+be granted the reach to open a task and nothing more — it holds `escalation` and
+is refused every other method of this contract. The resume path needs more than
+that: the decided event carries a task id and an outcome and never the grant
+(ruling R5), so a runner that wakes has to read the task back through `get_task`,
+which is in `triage`. Granting the runner `triage` would hand every run it
+executes the whole queue, including `claim_task` and `triage_task`, so that is
+not the answer either and the question is open. Whatever closes it is a change to
+this contract, not a deployment's workaround: either `get_task` gains a second
+set, or a narrower read for a runner is declared. **Until then a runner can open
+a task and cannot read it back.**
 
 **A triage decline is a decision made outside the claim.** `triage_task`
 admits a person and an agent, and a DECLINE through it refuses the requester

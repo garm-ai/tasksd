@@ -87,23 +87,32 @@ says what makes the overlap safe and what is left to do.
 
 ## The tools it serves
 
-| Tool | Who calls it | What it does |
-|---|---|---|
-| `create_task` | a runner | Opens a task for the run it is executing |
-| `list_tasks` | a person, an agent | The queue, what is mine, what is done — as cards |
-| `get_task` | a person, an agent | One task: the frame, its trail, its triage, its card |
-| `approval_card` | a person | The card a person decides from |
-| `claim_task` | a person, an agent | Takes a task out of the queue so two people do not decide it at once |
-| `release_task` | a person, an agent | Hands a claim back |
-| `decide_task` | a person | Approves, declines or answers |
-| `triage_task` | an agent | Recommends, comments, reassigns or declines — never approves |
+| Tool | Who calls it | Tool set | What it does |
+|---|---|---|---|
+| `create_task` | a runner | `escalation` | Opens a task for the run it is executing |
+| `list_tasks` | a person, an agent | `triage` | The queue, what is mine, what is done — as cards |
+| `get_task` | a person, an agent | `triage` | One task: the frame, its trail, its triage, its card |
+| `approval_card` | a person | `triage` | The card a person decides from |
+| `claim_task` | a person, an agent | `triage` | Takes a task out of the queue so two people do not decide it at once |
+| `release_task` | a person, an agent | `triage` | Hands a claim back |
+| `decide_task` | a person | `triage` | Approves, declines or answers |
+| `triage_task` | an agent | `triage` | Recommends, comments, reassigns or declines — never approves |
 
 Each one is declared in `proto/garm/tasks/v1/tasks.proto` with its verb, its
-clearance and its audience, and the routing table is read off those
+clearance, its audience and its set, and the routing table is read off those
 declarations at startup rather than written down — so a renamed tool is a
 build that changes rather than a table somebody has to remember to edit.
 Nothing in this repository decides who may call what; garmd does that from the
 catalogue, before the call arrives.
+
+**The set column is reach, and every row has one on purpose.** garmd refuses a
+caller any tool that shares none of the sets its token names, so a tool in NO
+set is reachable only by a caller in no set at all — not a lenient tool, but one
+every scoped role is refused. `escalation` holds `create_task` and nothing else,
+which is what lets a deployment grant the platform's runner the reach to open a
+task without granting it every public, writable tool in the catalogue. A role
+granted `escalation` can open a task and cannot read one back, claim one, decide
+one or triage one.
 
 ## The rules it enforces
 

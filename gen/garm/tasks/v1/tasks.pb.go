@@ -1399,12 +1399,13 @@ const file_garm_tasks_v1_tasks_proto_rawDesc = "" +
 	"\aAPPROVE\x10\x01\x12\v\n" +
 	"\aDECLINE\x10\x02\x12\n" +
 	"\n" +
-	"\x06ANSWER\x10\x032\xf1\f\n" +
-	"\fTasksService\x12\xc4\x01\n" +
+	"\x06ANSWER\x10\x032\xfd\f\n" +
+	"\fTasksService\x12\xd0\x01\n" +
 	"\n" +
-	"CreateTask\x12 .garm.tasks.v1.CreateTaskRequest\x1a!.garm.tasks.v1.CreateTaskResponse\"q\x92\xb5\x18m\n" +
+	"CreateTask\x12 .garm.tasks.v1.CreateTaskRequest\x1a!.garm.tasks.v1.CreateTaskResponse\"}\x92\xb5\x18y\n" +
 	"\vcreate_task\x12\vOpen a task\x1a@Open an approval or a question for a person, on behalf of a run. \x02(\n" +
-	"B\x04\b\x01\x10\x03J\x02\b\x01r\x01\x03\x12\xe1\x01\n" +
+	"B\x04\b\x01\x10\x03J\x02\b\x01b\n" +
+	"escalationr\x01\x03\x12\xe1\x01\n" +
 	"\tListTasks\x12\x1f.garm.tasks.v1.ListTasksRequest\x1a .garm.tasks.v1.ListTasksResponse\"\x90\x01\x92\xb5\x18\x8b\x01\n" +
 	"\n" +
 	"list_tasks\x12\n" +
@@ -1433,9 +1434,12 @@ const file_garm_tasks_v1_tasks_proto_rawDesc = "" +
 	"\vtriage_task\x12\rTriage a task\x1aCRecommend, comment, reassign or decline a task. You cannot approve. \x02(\n" +
 	"B\x11\b\x01\x10\x02\"\vtriage_taskJ\x02\b\x01R\x91\x01\n" +
 	"TTo recommend, comment, reassign or decline a task in your queue. You cannot approve.\x129To approve anything. There is no path here that approves.b\x06triager\x02\x01\x02\x1a%\xea\xc7\x18!\n" +
-	"\x0eagent-platform\x12\x0f#agent-platformB~\xaa\xb5\x18E\n" +
+	"\x0eagent-platform\x12\x0f#agent-platformB\xf1\x01\xaa\xb5\x18\xb7\x01\n" +
 	"C\n" +
-	"\x06triage\x129Task triage, offered to an agent whose manifest lists it.Z3github.com/garm-ai/tasksd/gen/garm/tasks/v1;tasksv1b\x06proto3"
+	"\x06triage\x129Task triage, offered to an agent whose manifest lists it.\n" +
+	"p\n" +
+	"\n" +
+	"escalation\x12bOpening a task for a person. Held by a runner that parks a run on a decision, and by nothing else.Z3github.com/garm-ai/tasksd/gen/garm/tasks/v1;tasksv1b\x06proto3"
 
 var (
 	file_garm_tasks_v1_tasks_proto_rawDescOnce sync.Once
