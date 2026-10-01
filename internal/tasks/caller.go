@@ -30,7 +30,17 @@ type Caller struct {
 	// Subject. An empty chain is a person calling for themselves.
 	Act []Act
 	// RunID is the run this call belongs to, from the invocation's
-	// attribution. Only a runner's calls carry one.
+	// attribution.
+	//
+	// NOTHING IN THIS SERVICE AUTHORIZES ON IT, and that is the state of the
+	// field rather than an oversight. garmd never sets it — it builds an
+	// attribution with a tenant and a correlation id — so it arrives empty on
+	// every call that reaches here through the daemon. `create_task` takes the
+	// run from its own request field for that reason, and `get_task_grant` is
+	// gated on the caller's attested identity, because a gate over this value
+	// refused every call. It is decoded anyway, so that everything a call
+	// carries is read in one place and the emptiness is visible here rather
+	// than rediscovered by the next gate that reaches for it.
 	RunID  string
 	CallID string
 }

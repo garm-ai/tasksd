@@ -161,6 +161,12 @@ func (s *Service) Create(ctx context.Context, c Caller, in CreateInput) (store.T
 	t := store.Task{
 		ID: s.newID(), Tenant: c.Tenant, Kind: kind, RunID: in.RunID,
 		Requester: in.Requester, Agent: c.Agent(), ToolFQN: in.Tool, Subject: in.Subject,
+		// The service that opened it, from the call's own subject and never
+		// from a request field. It is what get_task_grant hands the approval
+		// out against, so it has to be the attested value: the token service
+		// derives a service subject from the authenticated client credential,
+		// and a field would be a caller naming whoever it liked.
+		OpenedBy: c.Subject,
 		Material: in.Material, MaterialDigest: grant.Digest(in.Material),
 		Predicate: in.Predicate, State: store.StateOpen,
 		DecisionType: in.DecisionType, Question: in.Question,
@@ -176,7 +182,8 @@ func (s *Service) Create(ctx context.Context, c Caller, in CreateInput) (store.T
 	}
 	s.log().Info("task opened", "task", out.ID, "created", created,
 		"tenant", c.Tenant, "run", in.RunID, "tool", in.Tool,
-		"requester", in.Requester, "agent", c.Agent(), "call_id", c.CallID)
+		"requester", in.Requester, "opened_by", c.Subject, "agent", c.Agent(),
+		"call_id", c.CallID)
 	return out, nil
 }
 
@@ -277,14 +284,6 @@ type Approval struct {
 	GrantJTI string
 }
 
-// GrantGateUnimplementedMessage is what every caller of get_task_grant is told
-// today, and the reason is in mayReadGrant below: there is nothing attested on a
-// call that says which run it belongs to, so the per-task gate cannot be
-// implemented and the method refuses rather than guessing.
-const GrantGateUnimplementedMessage = "the approval cannot be handed over: reading one " +
-	"back requires possession of a capability for this task, and nothing attested on " +
-	"this call can stand in for one"
-
 // ReadGrant hands a parked run the approval its task was decided with.
 //
 // The decided event carries a task id and an outcome and never the grant (R5) —
@@ -313,45 +312,69 @@ func (s *Service) ReadGrant(ctx context.Context, c Caller, taskID string) (Appro
 	return Approval{TaskID: t.ID, Grant: t.Grant, GrantJTI: t.GrantJTI}, nil
 }
 
-// mayReadGrant is the gate on get_task_grant, and the one place to change when
-// the capability below lands.
+// mayReadGrant is the gate on get_task_grant: the service that opened a task is
+// the one that may collect its approval.
 //
-// THE THIRD STEP REFUSES UNCONDITIONALLY, AND THAT IS THE CURRENT STATE OF THE
-// FEATURE RATHER THAN A BUG. Step 1 is the gate the ruling asks for — a caller
-// may read the grant of a task whose run is the run the call carries, and no
-// other — and the fact it rests on does not exist: garmd builds the invocation's
-// attribution with a tenant and a correlation id and nothing else
-// (`internal/toolplane/core.go`, withInvocationContext), so
-// `CallContext.run_id` arrives EMPTY on every call through the daemon, whatever
-// the runner put on its own request. Audience is no substitute: an audience
-// decides who is OFFERED a tool and gates nothing, so AUDIENCE_RUNNER alone would
-// leave every runner able to read every task's grant.
+// THE IDENTITY IS ATTESTED, WHICH IS WHY IT IS THE CHECK. A service subject is
+// derived at the token service from the authenticated client credential, so a
+// caller cannot present a different one — and with a bound token the presenting
+// workload is held to that identity by `cnf`, so a stolen one is useless off the
+// runner it was issued to.
 //
-// The answer being designed is an opaque single-task capability `create_task`
-// returns and the runner presents on GetTaskGrantRequest — possession rather than
-// an unattested assertion. Until it exists this method is UNREACHABLE BY DESIGN:
-// step 1 already refuses every call that arrives through the daemon, and step 3
-// is why making run_id travel would not quietly open it.
+// NOT THE RUN, and that is not an omission. A per-run gate would read
+// `CallContext.run_id`, and garmd never writes it: the daemon builds the
+// invocation's attribution with a tenant and a correlation id and nothing else
+// (`internal/toolplane/core.go`, withInvocationContext), so the value arrives
+// empty on every call through the daemon and a gate over it refused everything —
+// which is what this function used to do. The run id on the row is no better: it
+// is a value the RUNNER asserted on create_task, so comparing the two would be
+// one unattested claim checked against another. The run id's job is to key the
+// decided event's subject, and routing decides who HEARS a decision, never who
+// may act on one.
 //
-// Note what step 1 would be comparing if it did. The task's own run id is a field
-// the RUNNER set on create_task, which nothing attests either, so this would be
-// one assertion checked against another. That is fine for what the task's run id
-// is for — routing a decision to whoever is listening, which decides who hears
-// and never who may — and it is exactly why it cannot be the authorization check
-// as well. Both halves of this gate go when the capability arrives, and the TODO
-// is on the one that replaces them.
+// Audience is no substitute either: an audience decides who is OFFERED a tool and
+// gates nothing, so AUDIENCE_RUNNER alone would leave every runner able to read
+// every task's approval.
 //
-// TODO(garm-ai/tasksd): replace step 3 with the capability check once
-// `create_task` mints one, and KNOWN-GAPS.md carries the rest.
+// WHAT THIS DOES NOT PROTECT AGAINST, written down so the next reader does not
+// take it for an oversight: within one runner, any run can read any task's
+// approval. That is accepted deliberately. A compromised runner holds every
+// approval it legitimately fetches anyway, and a per-task capability would have
+// been minted, stored and checkpointed in that same process's own state — so it
+// would have bought nothing against the same threat, while adding a second
+// bearer to steal. The trust boundary is the SERVICE, and the gate is drawn at
+// the trust boundary. Per-run isolation needs per-run credentials, and that is
+// the right end state only for a runner shared across tenants.
 //
-// The order matters as much as the checks. The run comes first and answers
-// exactly what a task that never existed answers, so a caller on another run
-// learns nothing about this one — not its state, not that it is there. Only a
-// caller already on the task's own run reaches the refusals below it.
+// The order matters as much as the checks. The identity comes first and answers
+// exactly what a task that never existed answers, so a caller who did not open
+// this task learns nothing about it — not its state, not that it is there. Only
+// the service that opened it reaches the refusals below.
 func (s *Service) mayReadGrant(c Caller, t store.Task) error {
-	// 1. The run. "no such task", because a caller who is not this run must not
-	//    be able to tell a task they may not read from one that is not there.
-	if c.RunID == "" || c.RunID != t.RunID {
+	// 1. The identity, and "no such task" for every way it can fail: a caller
+	//    who may not read this task must not be able to tell it from one that is
+	//    not there. One reason code for the three, because a code per reason is
+	//    an oracle for which task ids exist and which of them are decided.
+	if c.Kind != toolv1.PrincipalKind_PRINCIPAL_KIND_SERVICE {
+		return refuse(CodeNoSuchTask, "no such task")
+	}
+	if t.OpenedBy == "" {
+		// A row from before `opened_by` existed. Nothing records who opened it,
+		// so no caller can be the service that did, and it fails closed rather
+		// than matching on emptiness.
+		//
+		// The comparison below would refuse it anyway — CallerFrom rejects a
+		// call with no subject, so nothing ever equals the empty string — and
+		// this branch is here regardless, because an unrecorded opener is a
+		// different fact from the wrong one and only one of them is an
+		// operator's problem. The caller is told exactly what a stranger is
+		// told; the log says which task can no longer resume, so the run can be
+		// asked again rather than waiting on an approval nobody can hand over.
+		s.log().Warn("a task opened before this service recorded the opener cannot "+
+			"hand its approval back", "task", t.ID, "run", t.RunID, "caller", c.Subject)
+		return refuse(CodeNoSuchTask, "no such task")
+	}
+	if c.Subject != t.OpenedBy {
 		return refuse(CodeNoSuchTask, "no such task")
 	}
 
@@ -381,8 +404,7 @@ func (s *Service) mayReadGrant(c Caller, t store.Task) error {
 		return refuse(CodeBroke, "the approval recorded for this task could not be read")
 	}
 
-	// 3. Possession, which nothing can yet demonstrate.
-	return refuse(CodeDenied, GrantGateUnimplementedMessage)
+	return nil
 }
 
 // ---------------------------------------------------------------- claim

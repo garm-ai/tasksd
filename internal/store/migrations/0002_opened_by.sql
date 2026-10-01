@@ -1,0 +1,23 @@
+-- The service that opened a task, which is the one service that may read the
+-- approval back.
+--
+-- `get_task_grant` hands out a bearer, and this column is what it is handed out
+-- against: the caller's subject has to equal this value. The subject is
+-- ATTESTED — the token service derives a service subject from the authenticated
+-- client credential rather than reading it off a request — so a caller cannot
+-- name a different service, which is the whole reason the gate is drawn here.
+--
+-- Not the run. `run_id` on this table is a value the RUNNER asserted on
+-- create_task, and `attribution.run_id` on a call arrives empty because garmd
+-- never sets one; a gate over those two would be one unattested claim checked
+-- against another. The run id's job is routing a decision to whoever is
+-- listening, which decides who hears and never who may.
+--
+-- ADDITIVE, so every row written before this migration carries the empty
+-- string. That is deliberate and it fails closed: no caller's subject is ever
+-- empty — the invocation is refused without one — so no caller matches such a
+-- row, and a task opened before this change can never hand its approval back.
+-- There is nothing to backfill it from: the opener was never recorded, and
+-- taking it from `agent` would invent the fact the gate exists to check. A run
+-- parked on one of those tasks has to be asked again.
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS opened_by text NOT NULL DEFAULT '';

@@ -118,8 +118,8 @@ the number is agreed between two repositories and writing it down on both sides
 is the only thing that can keep them agreeing. A mismatch is loud rather than
 silent either way: the daemon refuses to route and says which package and why.
 
-**`get_task_grant` exists and its gate refuses every caller. The resume path
-does not work, and this is the entry that says why.**
+**`get_task_grant` works, and the gate is drawn at the service that opened the
+task. This entry is what is left rather than why nothing works.**
 
 The read back is no longer missing from the contract. `escalation` holds
 `create_task` and `get_task_grant` — two halves of one act — and the method
@@ -139,31 +139,43 @@ set bounds that and not the verb**: scoped to `escalation`, which holds these tw
 tools and nothing else, READ reaches one more method rather than every
 `CLEARANCE_PUBLIC`, uncompartmented, `VERB_READ` tool in the mounted catalogue.
 
-**What is missing is anything to gate on.** The ruling is that a runner may read
-the grant of a task whose `run_id` is the run the call carries and no other,
-because an audience is a listing rule and `AUDIENCE_RUNNER` alone would leave
-every runner able to read every task's grant. `Caller.RunID` comes from
-`InvocationContext.attribution.run_id`, and **garmd never writes that field**: it
-builds the attribution with a tenant and a correlation id and nothing else
-(`internal/toolplane/core.go`, `withInvocationContext`). So the value arrives empty
-on every call through the daemon, whatever the runner put on its own request, and
-a gate comparing it to the task's run id refuses everything.
+**What it gates on is the attested service identity.** `tasks.opened_by` records
+the subject on the call that opened a task — `create_task` writes it, migration
+`0002_opened_by.sql` adds it — and `mayReadGrant` requires a SERVICE principal
+whose subject equals it. That subject is derived at the token service from the
+authenticated client credential, so a caller cannot name a different service; with
+a bound token, `cnf` holds the presenting workload to it as well.
 
-`mayReadGrant` is implemented that way on purpose, and its third step refuses
-unconditionally on top — because making a run id travel would not fix it either: a
-caller-supplied run id is an assertion nothing checked, and a gate reading one is
-a gate any runner passes by naming somebody else's run. **The method is therefore
-unreachable by design rather than wrongly reachable, and a run that parks still
-cannot resume.** The refusal names the capability rather than the caller's
-authority, so the next person to see it knows this is unbuilt and not
-misconfigured.
+**The run could not do that job, and the earlier gate over it is what refused
+every call.** `Caller.RunID` comes from `InvocationContext.attribution.run_id` and
+**garmd never writes that field**: it builds the attribution with a tenant and a
+correlation id and nothing else (`internal/toolplane/core.go`,
+`withInvocationContext`). The run on the row is no better — the runner asserted it
+on `create_task` — so comparing the two would have been one unattested claim
+checked against another. A run id routes a decision to whoever is listening, and
+routing decides who hears, never who may.
 
-The answer being designed is an opaque single-task capability `create_task`
-returns and the runner presents — possession rather than an assertion.
-`GetTaskGrantRequest` is a message of its own rather than the shared
-`garm.card.v1.TaskRef`, so that capability lands as field 2 of a message only this
-method takes; **it will move the wire shape a third time**, and declaring the
-field before the decision is made would be guessing a contract.
+**It cost no contract change.** `opened_by` is this service's own column and is on
+no message, so the wire shape did not move and no catalogue has to be rebuilt for
+it — the first change in this programme that escapes that treadmill. The
+single-task capability that was being designed is dropped: it would have been a
+second bearer to mint, store, return once and checkpoint, for a boundary the
+platform already attests.
+
+**The limit, stated rather than solved: within one runner, any run can read any
+task's approval.** A compromised runner holds every approval it legitimately
+fetches anyway, and a capability would have been checkpointed in that same
+process's state — so it bought nothing against the same threat. The trust boundary
+is the service. Per-run isolation needs per-run credentials, and that is the right
+end state only for a runner shared across tenants.
+
+**A task opened before `opened_by` existed can never hand its approval back.** The
+column is additive and nothing can backfill it — the opener was never recorded,
+and taking it from `agent` would invent the fact the gate checks — so such a row
+carries the empty string, matches no caller, and is answered "no such task" with a
+line in the log naming it. A run parked on one of those has to ask again. Nothing
+in any deployment has opened a task on this service, so the set is expected to be
+empty; it is written down because a dev database can hold one.
 
 **The same emptiness used to break `create_task`, and that half is fixed.**
 `Create` requires a run to have something to signal, and it read
@@ -181,7 +193,7 @@ That field is an **assertion** — nothing attests it — and it is used for
 decision, never who may act on one. So the worst a runner can do by naming
 somebody else's run is wake it spuriously; that runner then goes to collect the
 approval and is refused, holding no capability for a task that was never its.
-Noise, not privilege. It is also why the gate above cannot be built on the same
+Noise, not privilege. It is also why the gate above is not built on the same
 value: a run id asserted on the create and a run id asserted on the read would be
 one unattested claim checked against another.
 
@@ -200,10 +212,11 @@ call. The check gets stricter when the contract carries the identity.
 
 The run id is not a contract gap and is no longer a gap in `Create` either:
 `CallContext.run_id` is declared, `garmd` never sets it, and `Create` therefore
-takes the run from its own request field instead. What still fails closed on every
-call through the daemon is the gate on `get_task_grant`, which is the entry above —
-and `Caller.RunID` is kept rather than retired, because it is read there and
-retiring it is not this change's to make.
+takes the run from its own request field instead. `Caller.RunID` is kept rather
+than retired, and **nothing authorizes on it now**: the gate on `get_task_grant`
+read it until 2026-10-02 and refused every call as a result. It is decoded so that
+everything a call carries is read in one place, and the comment on the field says
+it authorizes nothing, so the next gate does not reach for it.
 
 **Nothing here spends an approval.** Single use belongs to the daemon, which
 holds the replay cache. An approval replayed at this service closes a task

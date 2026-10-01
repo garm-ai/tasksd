@@ -8,7 +8,12 @@ import (
 	"github.com/garm-ai/tasksd/internal/store"
 )
 
-const tenant = "example"
+const (
+	tenant = "example"
+	// theOpener is the service that opens tasks here: a runner, calling as
+	// itself.
+	theOpener = "svc:agentd"
+)
 
 func at() time.Time { return time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC) }
 
@@ -16,6 +21,9 @@ func aTask(id string) store.Task {
 	return store.Task{
 		ID: id, Tenant: tenant, Kind: store.KindApproval, RunID: "run-1",
 		Requester: "user:asker@example.com", ToolFQN: "payments.v1.initiate_payment",
+		// The service that opened it, and the only one that may read its
+		// approval back. The requester is the person it was opened FOR.
+		OpenedBy: theOpener,
 		Subject:  "account:A-1",
 		Material: map[string]string{"amount_minor_units": "2500", "currency_code": "EUR"},
 		// The digest is the service's to compute; the store keeps whatever
@@ -38,15 +46,15 @@ func TestMigrateIsIdempotentAndRecordsItsVersion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("re-running the migrations: %v", err)
 	}
-	if v != 1 {
-		t.Errorf("version = %d, want 1", v)
+	if v != 2 {
+		t.Errorf("version = %d, want 2", v)
 	}
 	got, err := db.SchemaVersion(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != 1 {
-		t.Errorf("recorded version = %d, want 1", got)
+	if got != 2 {
+		t.Errorf("recorded version = %d, want 2", got)
 	}
 }
 
@@ -389,4 +397,77 @@ func ids(ts []store.Task) []string {
 		out[i] = t.ID
 	}
 	return out
+}
+
+// The opener survives every read of a row.
+//
+// A column added to the struct and missed in a scan is not a compile error and
+// not a visible failure: it is an empty string on a Task that came out of the
+// database. That empty string is what `get_task_grant` compares a caller's
+// subject against, so a missed scan would turn the gate on the approval into a
+// gate nobody passes — and the symptom would be a run that cannot resume, three
+// layers away from the SELECT that caused it.
+//
+// So each path that builds a Task is asked: the insert and its read-back, a
+// single get, a listing, and the row a decision returns.
+func TestTheOpenerSurvivesEveryReadOfARow(t *testing.T) {
+	db := store.TestDB(t)
+	opened, _, err := db.Create(t.Context(), aTask("t1"), created())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opened.OpenedBy != theOpener {
+		t.Errorf("the row Create read back names opener %q, want %q", opened.OpenedBy, theOpener)
+	}
+
+	got, err := db.Get(t.Context(), tenant, "t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.OpenedBy != theOpener {
+		t.Errorf("Get named opener %q, want %q", got.OpenedBy, theOpener)
+	}
+
+	list, err := db.List(t.Context(), store.Filter{Tenant: tenant})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 || list[0].OpenedBy != theOpener {
+		t.Errorf("the listing named opener %q, want %q", list[0].OpenedBy, theOpener)
+	}
+
+	decided, err := db.Decide(t.Context(), tenant, "t1", store.Decided{
+		State: store.StateApproved, Decision: store.DecisionApprove,
+		Reason: "checked", DecidedBy: "user:approver@example.com",
+		GrantJTI: "grn_1", Grant: "header.payload.signature", At: at(),
+	}, store.Event{At: at(), Actor: "user:approver@example.com", Kind: "approved"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decided.OpenedBy != theOpener {
+		t.Errorf("the row Decide returned names opener %q, want %q", decided.OpenedBy, theOpener)
+	}
+}
+
+// A row written before `opened_by` existed carries the empty string, and the
+// gate on the
+// approval reads it as a task no caller can prove it opened.
+//
+// The column is additive — there is nothing to backfill it from, since the
+// opener was never recorded — so this is what an old row looks like, written
+// here the way the migration leaves it.
+func TestARowFromBeforeTheColumnCarriesNoOpener(t *testing.T) {
+	db := store.TestDB(t)
+	old := aTask("t1")
+	old.OpenedBy = ""
+	if _, _, err := db.Create(t.Context(), old, created()); err != nil {
+		t.Fatal(err)
+	}
+	got, err := db.Get(t.Context(), tenant, "t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.OpenedBy != "" {
+		t.Errorf("opener = %q, want empty: the column defaults to nothing else", got.OpenedBy)
+	}
 }
