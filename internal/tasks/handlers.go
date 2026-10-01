@@ -32,6 +32,7 @@ func (h Handlers) CreateTask(ctx context.Context, req *tasksv1.CreateTaskRequest
 		Kind:            kindFrom(req.GetKind()),
 		Tool:            req.GetTool(),
 		Subject:         req.GetSubject(),
+		Requester:       req.GetRequester(),
 		Material:        req.GetMaterial(),
 		Predicate:       predicateFrom(req.GetPredicate()),
 		ExpiresIn:       time.Duration(req.GetExpiresInSeconds()) * time.Second,

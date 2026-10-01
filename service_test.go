@@ -1,6 +1,7 @@
 package tasksd_test
 
 import (
+	"strings"
 	"testing"
 
 	"google.golang.org/protobuf/proto"
@@ -28,6 +29,10 @@ func createRequest() *tasksv1.CreateTaskRequest {
 			Compartments: []string{"payments"},
 		},
 		ExpiresInSeconds: proto.Uint32(900),
+		// The person this task is opened FOR. The caller is the runner, which
+		// is not that person, so the requester has to be said rather than
+		// inferred.
+		Requester: proto.String(theAsker),
 	}
 }
 
@@ -36,11 +41,64 @@ func createRequest() *tasksv1.CreateTaskRequest {
 func openTask(t *testing.T, f *fixture) string {
 	t.Helper()
 	var res tasksv1.CreateTaskResponse
-	f.ok(t, routeCreate, runner(theAsker, theAgent, theRunID), createRequest(), &res)
+	f.ok(t, routeCreate, runner(theAgent, theRunID), createRequest(), &res)
 	if res.GetTaskId() == "" {
 		t.Fatal("create_task answered no task id")
 	}
 	return res.GetTaskId()
+}
+
+// A person calling create_task directly is refused. A task is opened BY a
+// runner FOR a person; a person opening their own approval would be asking
+// themselves, and four-eyes would have nobody left to exclude.
+func TestCreateRefusesAPersonCallingItDirectly(t *testing.T) {
+	f := newFixture(t)
+	code, why := f.call(t, routeCreate, person(theAsker), createRequest(), nil)
+	if code != "403" {
+		t.Fatalf("a person opened a task directly: code %q, %s", code, why)
+	}
+	if !strings.Contains(why, "service") {
+		t.Errorf("refusal was %q, want it to name the principal kind", why)
+	}
+}
+
+// No requester is a refusal, not a default. There is nobody to exclude from
+// deciding without it, so a task opened that way could be approved by the very
+// person who caused it.
+func TestCreateRefusesAnEmptyRequester(t *testing.T) {
+	f := newFixture(t)
+	req := createRequest()
+	req.Requester = nil
+	code, why := f.call(t, routeCreate, runner(theAgent, theRunID), req, nil)
+	if code == "" {
+		t.Fatal("a task was opened with no requester; there is nobody to exclude")
+	}
+	if !strings.Contains(why, "requester") {
+		t.Errorf("refusal was %q, want it to name the requester", why)
+	}
+}
+
+// The four-eyes exclusion reads the REQUESTER FIELD and not the caller. That is
+// the whole point of the field: the caller is a service, and excluding a
+// service from deciding excludes nobody who was ever going to decide.
+func TestTheFourEyesExclusionUsesTheRequesterField(t *testing.T) {
+	f := newFixture(t)
+	id := openTask(t, f)
+
+	var got tasksv1.Task
+	f.ok(t, routeGet, person(theApprove), &cardv1.TaskRef{TaskId: proto.String(id)}, &got)
+	if got.GetRequester() != theAsker {
+		t.Errorf("requester = %q, want the request's %q — not the caller", got.GetRequester(), theAsker)
+	}
+	if got.GetRequester() == theRunnerSvc {
+		t.Error("the requester is the calling service; the field was ignored")
+	}
+
+	// And the person named by the field is the one who may not decide.
+	code, why := f.call(t, routeClaim, person(theAsker), &cardv1.TaskRef{TaskId: proto.String(id)}, nil)
+	if code == "" {
+		t.Fatalf("the requester reached their own task: %s", why)
+	}
 }
 
 // A runner acting as an agent for a person opens a task, and the task

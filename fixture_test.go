@@ -53,8 +53,10 @@ const (
 	theAgent   = "agent:example.agents.v1.Assistant"
 	theTriager = "agent:example.agents.v1.Triager"
 	theApprove = "user:approver@example.com"
-	theTool    = "payments.v1.initiate_payment"
-	theSubject = "account:A-1"
+	// The runner's own identity. A task is opened BY this and FOR theAsker.
+	theRunnerSvc = "svc:agentd"
+	theTool      = "payments.v1.initiate_payment"
+	theSubject   = "account:A-1"
 )
 
 // The routes, as the contract names them.
@@ -210,10 +212,12 @@ func person(subject string) caller {
 	return caller{Subject: subject, Kind: toolv1.PrincipalKind_PRINCIPAL_KIND_USER}
 }
 
-// runner is a runner executing a run as an agent, on a person's behalf.
-func runner(subject, agent, runID string) caller {
+// runner is a runner executing a run as an agent. It is a SERVICE principal
+// acting as itself — the person the run belongs to is named by the request's
+// `requester`, not by this caller, because a runner is not that person.
+func runner(agent, runID string) caller {
 	return caller{
-		Subject: subject, Kind: toolv1.PrincipalKind_PRINCIPAL_KIND_USER,
+		Subject: theRunnerSvc, Kind: toolv1.PrincipalKind_PRINCIPAL_KIND_SERVICE,
 		Act: []string{agent}, RunID: runID,
 	}
 }
