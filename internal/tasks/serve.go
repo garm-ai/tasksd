@@ -42,6 +42,12 @@ func Register(r toolbind.Registrar, h Handlers, contractVersion string) error {
 				return h.CreateTask(ctx, m.(*tasksv1.CreateTaskRequest))
 			}),
 		},
+		"GetTaskGrant": {
+			func() proto.Message { return new(tasksv1.GetTaskGrantRequest) },
+			adapt(func(ctx context.Context, m proto.Message) (proto.Message, error) {
+				return h.GetTaskGrant(ctx, m.(*tasksv1.GetTaskGrantRequest))
+			}),
+		},
 		"ListTasks": {
 			func() proto.Message { return new(tasksv1.ListTasksRequest) },
 			adapt(func(ctx context.Context, m proto.Message) (proto.Message, error) {

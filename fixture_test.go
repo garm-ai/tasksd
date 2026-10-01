@@ -16,13 +16,13 @@ package tasksd_test
 // wired its own would be covering an arrangement nobody runs.
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
-	"io"
 	"log/slog"
 	"strings"
 	"sync"
@@ -69,6 +69,7 @@ const (
 	routeRelease = "/garm.tasks.v1.TasksService/ReleaseTask"
 	routeDecide  = "/garm.tasks.v1.TasksService/DecideTask"
 	routeTriage  = "/garm.tasks.v1.TasksService/TriageTask"
+	routeGrant   = "/garm.tasks.v1.TasksService/GetTaskGrant"
 )
 
 type fixture struct {
@@ -76,6 +77,12 @@ type fixture struct {
 
 	mu      sync.Mutex
 	signals []tasks.Signal
+
+	// logs is everything the service wrote while a test ran. It is captured
+	// rather than discarded because one assertion needs it: no bearer may reach
+	// a log line, and a check against io.Discard would pass without ever
+	// looking.
+	logs *logBuffer
 
 	key *ecdsa.PrivateKey
 	kid string
@@ -87,7 +94,8 @@ func newFixture(t *testing.T) *fixture {
 	dsn := store.TestDSN(t)
 
 	f := &fixture{
-		kid: "test-key",
+		kid:  "test-key",
+		logs: &logBuffer{},
 		// The clock an approval is minted against. The service runs on the
 		// real one, and an approval carries an issued-at and an expiry, so a
 		// fixed instant would pass today and fail tomorrow.
@@ -116,7 +124,10 @@ func newFixture(t *testing.T) *fixture {
 			// A sweep interval longer than any test, so expiry never runs
 			// under a case that is not about it.
 			SweepEvery: time.Hour,
-			Log:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+			// DEBUG, so the assertion that nothing logs a bearer is made
+			// against every line this service can write rather than the
+			// subset a default level lets through.
+			Log: slog.New(slog.NewTextHandler(f.logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
 		})
 	}()
 	t.Cleanup(func() {
@@ -134,6 +145,29 @@ func newFixture(t *testing.T) *fixture {
 	waitForSubject(t, f.NC, wire.Subject(routeDecide))
 	return f
 }
+
+// logBuffer collects log output from whatever goroutine wrote it. slog's
+// handler serialises its own writes, but the test reads while the service is
+// still running, so the buffer carries its own lock.
+type logBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (l *logBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.buf.Write(p)
+}
+
+func (l *logBuffer) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.buf.String()
+}
+
+// Logs is everything the service has written so far.
+func (f *fixture) Logs() string { return f.logs.String() }
 
 // Signals is what the runner would have been told, read under the lock: the
 // handler runs on the service's own goroutine.

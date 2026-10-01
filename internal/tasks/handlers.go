@@ -15,7 +15,7 @@ import (
 	"github.com/garm-ai/tasksd/internal/store"
 )
 
-// Handlers is the contract's eight methods over the service.
+// Handlers is the contract's nine methods over the service.
 //
 // It translates and nothing else: every rule about who may do what is in
 // Service, so a reader looking for the checks finds them in one file and a
@@ -33,6 +33,7 @@ func (h Handlers) CreateTask(ctx context.Context, req *tasksv1.CreateTaskRequest
 		Tool:            req.GetTool(),
 		Subject:         req.GetSubject(),
 		Requester:       req.GetRequester(),
+		RunID:           req.GetRunId(),
 		Material:        req.GetMaterial(),
 		Predicate:       predicateFrom(req.GetPredicate()),
 		ExpiresIn:       time.Duration(req.GetExpiresInSeconds()) * time.Second,
@@ -44,6 +45,27 @@ func (h Handlers) CreateTask(ctx context.Context, req *tasksv1.CreateTaskRequest
 		return nil, err
 	}
 	return &tasksv1.CreateTaskResponse{TaskId: proto.String(t.ID)}, nil
+}
+
+// GetTaskGrant hands a parked run the approval it was waiting for.
+//
+// Every refusal comes back from the service, which is where the gate is. This
+// translates and nothing else — in particular it does not log the answer it is
+// building, because the answer is a bearer.
+func (h Handlers) GetTaskGrant(ctx context.Context, req *tasksv1.GetTaskGrantRequest) (*tasksv1.TaskGrant, error) {
+	c, err := CallerFrom(ctx)
+	if err != nil {
+		return nil, err
+	}
+	a, err := h.Svc.ReadGrant(ctx, c, req.GetTaskId())
+	if err != nil {
+		return nil, err
+	}
+	return &tasksv1.TaskGrant{
+		TaskId:   proto.String(a.TaskID),
+		Grant:    proto.String(a.Grant),
+		GrantJti: proto.String(a.GrantJTI),
+	}, nil
 }
 
 // ListTasks answers one screen as a list of cards.

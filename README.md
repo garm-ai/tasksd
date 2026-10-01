@@ -40,7 +40,14 @@ client mints an approval token against their own credentials and hands it in
 with the decision; this service checks that the token names this task and
 these values before it records anything.
 
-The run is then told, and carries on — with the approval, if it got one.
+The run is then told, and carries on. **It is told a reference and never the
+approval**: a bearer published to a stream is readable by anything that can
+consume the subject for that stream's retention, and a replay would replay a
+credential. So the event names the task and the outcome, and the run collects
+the approval itself through `get_task_grant` — one method, for the runner,
+answering with a message no other method returns. That method is declared and
+**refuses every caller today**, because the per-task check it needs has nothing
+attested to read; `KNOWN-GAPS.md` has the whole of it.
 
 An agent can work the same queue without being able to say yes. It can
 recommend, comment, hand a task to a stricter audience, or decline it with a
@@ -52,7 +59,7 @@ reason. There is no argument to any method here that lets an agent approve.
 module:
 
 ```
-proto/garm/tasks/v1/tasks.proto        the contract: eight tools, the messages
+proto/garm/tasks/v1/tasks.proto        the contract: nine tools, the messages
                                        and the field policies
 gen/garm/tasks/v1/                     the generated Go, committed
 third_party/proto/garm/                the annotations and the card, vendored

@@ -10,6 +10,7 @@ import (
 	toolv1 "github.com/garm-ai/contracts/garm/tool/v1"
 
 	tasksv1 "github.com/garm-ai/tasksd/gen/garm/tasks/v1"
+	"github.com/garm-ai/tasksd/internal/signal"
 )
 
 // theMaterial is what the person is being asked about, and what the
@@ -33,6 +34,11 @@ func createRequest() *tasksv1.CreateTaskRequest {
 		// is not that person, so the requester has to be said rather than
 		// inferred.
 		Requester: proto.String(theAsker),
+		// The run to tell when this is decided, said rather than read off the
+		// invocation: garmd builds an attribution with a tenant and a correlation
+		// id and never a run id, so a service asking the invocation for a run is
+		// asking for something that never arrives.
+		RunId: proto.String(theRunID),
 	}
 }
 
@@ -592,4 +598,276 @@ func cardIDs(cards []*cardv1.Card) []string {
 		out[i] = c.GetSubjectId()
 	}
 	return out
+}
+
+// ------------------------------------------------- reading the approval back
+
+// decidedTask is a task taken all the way to APPROVED, with the approval the
+// deciding person's client minted recorded against it. It returns the task id and
+// the bearer, so a test can assert what must never appear anywhere.
+func decidedTask(t *testing.T, f *fixture) (string, string) {
+	t.Helper()
+	id := openTask(t, f)
+	f.ok(t, routeClaim, person(theApprove), &cardv1.TaskRef{TaskId: proto.String(id)}, nil)
+	bearer := f.grantFor(t, id, theMaterial(), nil)
+	f.ok(t, routeDecide, person(theApprove), &tasksv1.DecideTaskRequest{
+		TaskId: proto.String(id), Decision: tasksv1.Decision_APPROVE.Enum(),
+		Reason: proto.String("the invoice matches"), Grant: proto.String(bearer),
+	}, nil)
+	return id, bearer
+}
+
+// get_task_grant is mounted, reachable on its own route, and REFUSES THE CALLER
+// IT EXISTS FOR.
+//
+// That last part is the current state of the feature rather than a bug in this
+// test. The gate the ruling asks for is per-task — a runner may read the grant of
+// the task its own run was parked on and no other — and the attested fact it
+// needs does not exist: garmd builds the invocation's attribution with a tenant
+// and a correlation id and never a run id, so nothing on a call says which run it
+// belongs to. An audience is no substitute, because an audience decides who is
+// OFFERED a tool and gates nothing. So the method refuses possession it cannot
+// check, and a deployment gets a run that fails with a reason instead of a
+// credential handed to whoever asked.
+//
+// The refusal names the capability rather than the caller's authority, because
+// the next person to see it needs to know this is unbuilt rather than
+// misconfigured.
+func TestTheGrantReadBackRefusesEvenTheRunThatIsWaiting(t *testing.T) {
+	f := newFixture(t)
+	id, bearer := decidedTask(t, f)
+
+	code, why := f.call(t, routeGrant, runner(theAgent, theRunID),
+		&tasksv1.GetTaskGrantRequest{TaskId: proto.String(id)}, nil)
+	if code != "403" {
+		t.Fatalf("the waiting run got %q: %s — the gate must refuse until a "+
+			"capability can be presented", code, why)
+	}
+	if !strings.Contains(why, "capability") {
+		t.Errorf("refusal is %q, want it to name the capability that is missing", why)
+	}
+	if strings.Contains(why, bearer) {
+		t.Error("the refusal quotes the approval it refused to hand over")
+	}
+}
+
+// A run that is not the task's is told what a task that never existed is told.
+//
+// This is the half of the gate that does work, and the half that matters most if
+// the attested run id ever arrives: audience would have let any runner read any
+// task's approval, and a refusal that said "not your run" would still have told
+// the caller the task is there and decided.
+func TestAnotherRunIsToldTheTaskIsNotThere(t *testing.T) {
+	f := newFixture(t)
+	id, _ := decidedTask(t, f)
+
+	code, why := f.call(t, routeGrant, runner(theAgent, "run_01somebody-else"),
+		&tasksv1.GetTaskGrantRequest{TaskId: proto.String(id)}, nil)
+	if code != "404" {
+		t.Fatalf("another run got %q: %s, want 404", code, why)
+	}
+	if why != "no such task" {
+		t.Errorf("refusal is %q, want the words a missing task gets", why)
+	}
+}
+
+// A task with no approval refuses with a reason, and never succeeds emptily. A
+// run handed nothing would present nothing to the daemon and fail there, with no
+// trace back to the decline that caused it.
+func TestATaskWithNoApprovalRefusesWithAReason(t *testing.T) {
+	f := newFixture(t)
+
+	// Not decided yet.
+	open := openTask(t, f)
+	code, why := f.call(t, routeGrant, runner(theAgent, theRunID),
+		&tasksv1.GetTaskGrantRequest{TaskId: proto.String(open)}, nil)
+	if code != "409" || !strings.Contains(why, "not decided") {
+		t.Errorf("an undecided task answered %q: %s, want 409 naming that it is not decided", code, why)
+	}
+
+	// Declined. A decline authorises nothing and mints no approval, and that has
+	// to read as a refusal rather than an approval that happens to be empty.
+	f.ok(t, routeTriage, person(theApprove), &tasksv1.TriageTaskRequest{
+		TaskId: proto.String(open), Action: tasksv1.TriageTaskRequest_DECLINE.Enum(),
+		Reason: proto.String("the beneficiary is not on the approved list"),
+	}, nil)
+	code, why = f.call(t, routeGrant, runner(theAgent, theRunID),
+		&tasksv1.GetTaskGrantRequest{TaskId: proto.String(open)}, nil)
+	if code != "409" || !strings.Contains(why, "declined") {
+		t.Errorf("a declined task answered %q: %s, want 409 naming the decline", code, why)
+	}
+}
+
+// A task of another tenant is not there, on this route as on every other.
+func TestTheGrantReadBackIsConfinedToItsTenant(t *testing.T) {
+	f := newFixture(t)
+	id, _ := decidedTask(t, f)
+
+	other := runner(theAgent, theRunID)
+	other.Tenant = "somebody-else"
+	code, _ := f.call(t, routeGrant, other, &tasksv1.GetTaskGrantRequest{TaskId: proto.String(id)}, nil)
+	if code != "404" {
+		t.Errorf("a task of another tenant answered %q", code)
+	}
+}
+
+// NO BEARER REACHES A LOG LINE.
+//
+// The whole path is driven first — a task opened, claimed, approved with a real
+// signed token, the approval read back, and a second read on another run refused
+// — and then every line the service wrote is searched for the token and for each
+// of its three segments. The segments matter separately: a handler that logged a
+// request or an error by value would print the whole token, and a formatter that
+// truncated one would still print the header and payload.
+//
+// The fixture captures the log at DEBUG for this test. Before it did, the log
+// went to io.Discard, so this assertion would have passed without looking at
+// anything — which is the failure mode worth naming, not the leak.
+func TestNoBearerReachesALogLine(t *testing.T) {
+	f := newFixture(t)
+	id, bearer := decidedTask(t, f)
+
+	f.call(t, routeGrant, runner(theAgent, theRunID),
+		&tasksv1.GetTaskGrantRequest{TaskId: proto.String(id)}, nil)
+	f.call(t, routeGrant, runner(theAgent, "run_01somebody-else"),
+		&tasksv1.GetTaskGrantRequest{TaskId: proto.String(id)}, nil)
+
+	logs := f.Logs()
+	if logs == "" {
+		t.Fatal("nothing was logged at all, so this test proves nothing; the fixture " +
+			"has to capture the service's log for it to mean anything")
+	}
+	if strings.Contains(logs, bearer) {
+		t.Error("the approval appears in the log by value")
+	}
+	for i, segment := range strings.Split(bearer, ".") {
+		if segment == "" {
+			continue
+		}
+		if strings.Contains(logs, segment) {
+			t.Errorf("segment %d of the approval appears in the log; a truncated "+
+				"credential is still a credential", i)
+		}
+	}
+	// The positive control: the captured log really covers the calls under test,
+	// so the absence above is an absence and not an empty buffer. The task id is
+	// what this path writes down.
+	//
+	// It is deliberately not the approval's identifier, which is the one thing
+	// about a grant a line here MAY say. That line is in ReadGrant, on the far
+	// side of a gate that refuses every call today, so asserting it would be
+	// asserting the gate is open.
+	if !strings.Contains(logs, id) {
+		t.Errorf("no line names task %s, so the captured log is not the log of the "+
+			"calls this test made", id)
+	}
+}
+
+// ------------------------------------------------- the run comes from the request
+
+// A runner names the run in the REQUEST, and the invocation is not consulted.
+//
+// This is the whole of why create_task had never once succeeded in the platform.
+// `Create` required a run id and read it from `attribution.run_id`, which garmd
+// NEVER SETS — it builds an invocation with a tenant and a correlation id, and
+// reads an incoming attribution for the correlation id alone. So every call that
+// arrived through the daemon named no run and was refused, and the queue Studio
+// pages was empty because nothing could write to it.
+//
+// The caller here carries no run on its invocation, which is every caller
+// arriving through garmd. The task is opened anyway, and the run it records is
+// the one the request named.
+//
+// The fix is not to teach garmd about runs: knowing nothing about agents or runs
+// is one of that daemon's invariants, and a daemon populating a run id is run
+// semantics in the one component that must not have any. The runner is the only
+// party that knows which run it is executing, so the runner declares it.
+func TestCreateTakesTheRunFromTheRequestAndNotTheInvocation(t *testing.T) {
+	f := newFixture(t)
+
+	noRunOnTheCall := runner(theAgent, "")
+	var res tasksv1.CreateTaskResponse
+	f.ok(t, routeCreate, noRunOnTheCall, createRequest(), &res)
+	if res.GetTaskId() == "" {
+		t.Fatal("create_task answered no task id for a caller whose invocation names " +
+			"no run — which is every caller arriving through garmd")
+	}
+
+	var got tasksv1.Task
+	f.ok(t, routeGet, person(theApprove),
+		&cardv1.TaskRef{TaskId: proto.String(res.GetTaskId())}, &got)
+	if got.GetRunId() != theRunID {
+		t.Errorf("run = %q, want the request's %q", got.GetRunId(), theRunID)
+	}
+}
+
+// No run is a refusal, and the refusal names the FIELD. A task whose decision can
+// reach nothing is a person asked a question for no reason.
+//
+// It names the field rather than the invocation because that is where a caller
+// can do something about it. The old message — "the call names no run to
+// signal" — sent whoever read it looking at a header that was never going to
+// carry one.
+func TestCreateRefusesARequestThatNamesNoRun(t *testing.T) {
+	f := newFixture(t)
+	req := createRequest()
+	req.RunId = nil
+
+	code, why := f.call(t, routeCreate, runner(theAgent, theRunID), req, nil)
+	if code == "" {
+		t.Fatal("a task was opened with no run; nothing can be told when it is decided")
+	}
+	if !strings.Contains(why, "run_id") {
+		t.Errorf("refusal is %q, want it to name the run_id field — the caller can fix "+
+			"a field, and cannot fix an invocation garmd builds", why)
+	}
+	// And not by falling back to the invocation, which DOES name a run here.
+	if strings.Contains(why, "invocation") {
+		t.Errorf("refusal is %q; the invocation is not where the run comes from any more", why)
+	}
+}
+
+// The subject the decided event lands on is built from the run the REQUEST named.
+//
+// This is the point of the field rather than a detail of it: the run id keys
+// `garm.tasks.v1.decided.<tenant>.<run_id>`, which is the one thing it is used
+// for. It is an ASSERTION — nothing attests it — and that is acceptable precisely
+// because routing decides who HEARS a decision and never who MAY act on one. The
+// worst a runner can do by naming somebody else's run is wake it spuriously, and
+// that runner is then refused the approval because it holds no capability for a
+// task that was never its.
+func TestTheDecidedSubjectIsBuiltFromTheRunTheRequestNamed(t *testing.T) {
+	f := newFixture(t)
+
+	const itsOwnRun = "run_01theRequestsOwn"
+	req := createRequest()
+	req.RunId = proto.String(itsOwnRun)
+
+	var res tasksv1.CreateTaskResponse
+	// No run on the invocation, so nothing but the request could be the source.
+	f.ok(t, routeCreate, runner(theAgent, ""), req, &res)
+	id := res.GetTaskId()
+
+	f.ok(t, routeClaim, person(theApprove), &cardv1.TaskRef{TaskId: proto.String(id)}, nil)
+	f.ok(t, routeDecide, person(theApprove), &tasksv1.DecideTaskRequest{
+		TaskId: proto.String(id), Decision: tasksv1.Decision_APPROVE.Enum(),
+		Reason: proto.String("the invoice matches"),
+		Grant:  proto.String(f.grantFor(t, id, theMaterial(), nil)),
+	}, nil)
+
+	signals := f.Signals()
+	if len(signals) != 1 {
+		t.Fatalf("the run was told %d times", len(signals))
+	}
+	if signals[0].RunID != itsOwnRun {
+		t.Fatalf("the decision was addressed to run %q, want %q", signals[0].RunID, itsOwnRun)
+	}
+	want := signal.Subject(theTenant, itsOwnRun)
+	if got := signal.Subject(signals[0].Tenant, signals[0].RunID); got != want {
+		t.Errorf("the decided subject is %q, want %q", got, want)
+	}
+	if !strings.Contains(want, "run_01theRequestsOwn") {
+		t.Fatalf("the subject %q does not carry the run at all, so this test proves "+
+			"nothing about where the run came from", want)
+	}
 }
