@@ -141,9 +141,12 @@ func TestEveryMethodDeclaresASetAndEscalationHoldsOpeningAndCollecting(t *testin
 //
 // It pins the audience and the audit for the same reason the service refuses to
 // log a bearer: AUDIENCE_RUNNER is why no person's client and no model ever lists
-// a credential read, and the two `record_` flags are why neither the bearer this
-// returns nor the capability its request will carry reaches a ledger row by
-// value.
+// a credential read, and `record_response` is why the bearer this returns reaches
+// no ledger row by value. `record_request` is the weaker of the two — the request
+// names a task and carries nothing secret, and the single-task capability it was
+// once expected to carry is dropped — and it stays false because nothing is
+// gained by turning it on: the ledger already records that this call was made, by
+// whom and against which task.
 func TestTheGrantReadBackIsDeclaredWhereTheRunnerAlreadyReaches(t *testing.T) {
 	svc := tasksv1.File_garm_tasks_v1_tasks_proto.Services().Get(0)
 	md := svc.Methods().ByName("GetTaskGrant")
@@ -182,8 +185,9 @@ func TestTheGrantReadBackIsDeclaredWhereTheRunnerAlreadyReaches(t *testing.T) {
 			"ledger row would hold the credential by value")
 	}
 	if pol.GetAudit().GetRecordRequest() {
-		t.Error("audit.record_request is true: the request is where a single-task " +
-			"capability lands, and a ledger row holding one would be the same leak")
+		t.Error("audit.record_request is true: this call's request body buys a ledger " +
+			"row nothing, and the one method that hands out a credential is the last " +
+			"place to start recording bodies by value")
 	}
 }
 

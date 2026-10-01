@@ -45,9 +45,11 @@ approval**: a bearer published to a stream is readable by anything that can
 consume the subject for that stream's retention, and a replay would replay a
 credential. So the event names the task and the outcome, and the run collects
 the approval itself through `get_task_grant` — one method, for the runner,
-answering with a message no other method returns. That method is declared and
-**refuses every caller today**, because the per-task check it needs has nothing
-attested to read; `KNOWN-GAPS.md` has the whole of it.
+answering with a message no other method returns. **The service that opened the
+task is the one that may collect its approval**: the caller's subject has to equal
+the one the task recorded when it was opened, and that subject is attested rather
+than claimed. Anybody else is told the task is not there. `KNOWN-GAPS.md` has what
+that does and does not protect against.
 
 An agent can work the same queue without being able to say yes. It can
 recommend, comment, hand a task to a stricter audience, or decline it with a
@@ -217,6 +219,11 @@ they are what the approval's digest is computed over and what the card shows
 holds a credential, `grant` on `tasks`, and it holds a spent one: the
 approval that was presented, kept for the audit trail. A test walks every
 other column and the trail to check that nothing else ever does.
+
+`opened_by` is the column that credential is handed back against: the service
+that opened the task, taken from the subject on the call, and the only caller
+`get_task_grant` answers. It is on no message — a card's readers gain nothing
+from it — which is why adding it moved no wire shape.
 
 ## Telling a run its answer
 

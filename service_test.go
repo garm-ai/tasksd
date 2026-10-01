@@ -617,57 +617,76 @@ func decidedTask(t *testing.T, f *fixture) (string, string) {
 	return id, bearer
 }
 
-// get_task_grant is mounted, reachable on its own route, and REFUSES THE CALLER
-// IT EXISTS FOR.
+// anotherRunner is a second service on the same broker: the same shape as the
+// one that opened the task, and a different attested subject. Nothing but the
+// subject differs, so a test using it varies exactly what the gate reads.
+func anotherRunner() caller {
+	c := runner(theAgent, theRunID)
+	c.Subject = "svc:somebody-else"
+	return c
+}
+
+// get_task_grant is mounted, reachable on its own route, and HANDS THE APPROVAL
+// TO THE SERVICE THAT OPENED THE TASK.
 //
-// That last part is the current state of the feature rather than a bug in this
-// test. The gate the ruling asks for is per-task — a runner may read the grant of
-// the task its own run was parked on and no other — and the attested fact it
-// needs does not exist: garmd builds the invocation's attribution with a tenant
-// and a correlation id and never a run id, so nothing on a call says which run it
-// belongs to. An audience is no substitute, because an audience decides who is
-// OFFERED a tool and gates nothing. So the method refuses possession it cannot
-// check, and a deployment gets a run that fails with a reason instead of a
-// credential handed to whoever asked.
+// This is the whole resume path driven end to end for the first time: a runner
+// opens a task, a person approves it with a token their own client minted, and
+// the runner collects that token back. Before the gate was drawn at the service
+// identity it refused unconditionally, and a parked run could never resume.
 //
-// The refusal names the capability rather than the caller's authority, because
-// the next person to see it needs to know this is unbuilt rather than
-// misconfigured.
-func TestTheGrantReadBackRefusesEvenTheRunThatIsWaiting(t *testing.T) {
+// It also proves `create_task` records the opener, which nothing on the wire can
+// show: `opened_by` is this service's own column and is on no message. If Create
+// stopped setting it, the row would record no opener and this call would be told
+// the task is not there.
+//
+// The caller names NO run of its own — `runner(theAgent, theRunID)` puts one on
+// the invocation, but garmd never does, and the gate reads none. What authorises
+// this is the subject.
+func TestTheOpeningServiceCollectsItsApproval(t *testing.T) {
 	f := newFixture(t)
 	id, bearer := decidedTask(t, f)
 
-	code, why := f.call(t, routeGrant, runner(theAgent, theRunID),
-		&tasksv1.GetTaskGrantRequest{TaskId: proto.String(id)}, nil)
-	if code != "403" {
-		t.Fatalf("the waiting run got %q: %s — the gate must refuse until a "+
-			"capability can be presented", code, why)
+	var got tasksv1.TaskGrant
+	f.ok(t, routeGrant, runner(theAgent, theRunID),
+		&tasksv1.GetTaskGrantRequest{TaskId: proto.String(id)}, &got)
+	if got.GetTaskId() != id {
+		t.Errorf("the answer names task %q, want %q", got.GetTaskId(), id)
 	}
-	if !strings.Contains(why, "capability") {
-		t.Errorf("refusal is %q, want it to name the capability that is missing", why)
+	if got.GetGrant() != bearer {
+		t.Errorf("the approval handed back is not the one the approver minted:\n got %q\nwant %q",
+			got.GetGrant(), bearer)
 	}
-	if strings.Contains(why, bearer) {
-		t.Error("the refusal quotes the approval it refused to hand over")
+	if got.GetGrantJti() != "grn_01test" {
+		t.Errorf("grant jti = %q, want the identifier of the approval that was recorded",
+			got.GetGrantJti())
 	}
 }
 
-// A run that is not the task's is told what a task that never existed is told.
+// A service that did not open the task is told what a caller of a task that never
+// existed is told, and so is a person.
 //
-// This is the half of the gate that does work, and the half that matters most if
-// the attested run id ever arrives: audience would have let any runner read any
-// task's approval, and a refusal that said "not your run" would still have told
-// the caller the task is there and decided.
-func TestAnotherRunIsToldTheTaskIsNotThere(t *testing.T) {
+// This is the half of the gate that keeps it from being a listing: a refusal
+// saying "not yours" would still tell the caller the task is there and decided,
+// and an audience gates nothing at all — it decides who is OFFERED a tool.
+func TestOnlyTheOpeningServiceIsToldTheTaskIsThere(t *testing.T) {
 	f := newFixture(t)
 	id, _ := decidedTask(t, f)
 
-	code, why := f.call(t, routeGrant, runner(theAgent, "run_01somebody-else"),
+	code, why := f.call(t, routeGrant, anotherRunner(),
 		&tasksv1.GetTaskGrantRequest{TaskId: proto.String(id)}, nil)
 	if code != "404" {
-		t.Fatalf("another run got %q: %s, want 404", code, why)
+		t.Fatalf("another service got %q: %s, want 404", code, why)
 	}
 	if why != "no such task" {
 		t.Errorf("refusal is %q, want the words a missing task gets", why)
+	}
+
+	// A person, with no delegation chain and a USER principal. An approval is a
+	// bearer minted for a run to present, and there is no run behind a keyboard.
+	code, why = f.call(t, routeGrant, person(theApprove),
+		&tasksv1.GetTaskGrantRequest{TaskId: proto.String(id)}, nil)
+	if code != "404" || why != "no such task" {
+		t.Errorf("a person got %q: %s, want 404 / no such task", code, why)
 	}
 }
 
@@ -714,9 +733,11 @@ func TestTheGrantReadBackIsConfinedToItsTenant(t *testing.T) {
 // NO BEARER REACHES A LOG LINE.
 //
 // The whole path is driven first — a task opened, claimed, approved with a real
-// signed token, the approval read back, and a second read on another run refused
-// — and then every line the service wrote is searched for the token and for each
-// of its three segments. The segments matter separately: a handler that logged a
+// signed token, the approval read back SUCCESSFULLY, and a second read by another
+// service refused — and then every line the service wrote is searched for the
+// token and for each of its three segments. The successful read is what makes
+// this test worth having: that is the one call in the service that puts a bearer
+// in a reply, so it is the one that could put it in a log. The segments matter separately: a handler that logged a
 // request or an error by value would print the whole token, and a formatter that
 // truncated one would still print the header and payload.
 //
@@ -729,7 +750,7 @@ func TestNoBearerReachesALogLine(t *testing.T) {
 
 	f.call(t, routeGrant, runner(theAgent, theRunID),
 		&tasksv1.GetTaskGrantRequest{TaskId: proto.String(id)}, nil)
-	f.call(t, routeGrant, runner(theAgent, "run_01somebody-else"),
+	f.call(t, routeGrant, anotherRunner(),
 		&tasksv1.GetTaskGrantRequest{TaskId: proto.String(id)}, nil)
 
 	logs := f.Logs()
@@ -751,15 +772,17 @@ func TestNoBearerReachesALogLine(t *testing.T) {
 	}
 	// The positive control: the captured log really covers the calls under test,
 	// so the absence above is an absence and not an empty buffer. The task id is
-	// what this path writes down.
-	//
-	// It is deliberately not the approval's identifier, which is the one thing
-	// about a grant a line here MAY say. That line is in ReadGrant, on the far
-	// side of a gate that refuses every call today, so asserting it would be
-	// asserting the gate is open.
+	// what this path writes down, and so is the approval's IDENTIFIER — the one
+	// thing about a grant a line here may say, and the line ReadGrant writes when
+	// it hands one over.
 	if !strings.Contains(logs, id) {
 		t.Errorf("no line names task %s, so the captured log is not the log of the "+
 			"calls this test made", id)
+	}
+	if !strings.Contains(logs, "grn_01test") {
+		t.Error("no line names the approval's identifier, so the successful read " +
+			"either did not happen or was not logged — and then this test is not " +
+			"looking at the log of the call that carries a bearer")
 	}
 }
 
@@ -833,9 +856,11 @@ func TestCreateRefusesARequestThatNamesNoRun(t *testing.T) {
 // `garm.tasks.v1.decided.<tenant>.<run_id>`, which is the one thing it is used
 // for. It is an ASSERTION — nothing attests it — and that is acceptable precisely
 // because routing decides who HEARS a decision and never who MAY act on one. The
-// worst a runner can do by naming somebody else's run is wake it spuriously, and
-// that runner is then refused the approval because it holds no capability for a
-// task that was never its.
+// worst a runner can do by naming somebody else's run is wake it spuriously; the
+// approval is handed back on the SERVICE that opened the task, so a different
+// service that names this run is refused it. Within one service that is the limit
+// `mayReadGrant` records rather than solves, and a spurious wake is still noise
+// rather than privilege.
 func TestTheDecidedSubjectIsBuiltFromTheRunTheRequestNamed(t *testing.T) {
 	f := newFixture(t)
 

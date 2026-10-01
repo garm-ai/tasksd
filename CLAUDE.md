@@ -19,8 +19,9 @@ runs being one of its invariants — so `create_task` was refused on every call 
 arrived through the daemon until the run moved onto `CreateTaskRequest.run_id`.
 That field is an assertion, used for routing a decision and never for authorizing
 one; the proto's comment on it is the place to read why that is sound.
-`Caller.RunID` remains and is still read by `get_task_grant`'s gate, where it is
-part of why that gate refuses everything.
+`Caller.RunID` remains and **nothing authorizes on it**: `get_task_grant`'s gate
+read it until 2026-10-02 and refused every call as a result, and it is now gated
+on the caller's attested identity instead.
 
 **2. This service never says yes on a person's behalf.** It does not mint an
 approval and it cannot: the approver's own client mints one against the
@@ -102,13 +103,22 @@ The one thing that is not there is the approval itself:
 `github.com/garm-ai/contracts/grants` — the shared verification both this
 service and the daemon use, so the binding is written once.
 
-**`mayReadGrant` is the gate on `get_task_grant`, and it refuses everything.**
-That is the state of the feature, not a bug to fix in passing. Its third step is
-an unconditional denial because the check the ruling asks for — a runner may read
-the grant of the task its own run was parked on, and no other — rests on a run id
-that `garmd` never puts on an invocation, and because an audience gates nothing.
-Read the comment on that function before changing it: a capability `create_task`
-mints is what replaces both halves, and `KNOWN-GAPS.md` carries the rest.
+**`mayReadGrant` is the gate on `get_task_grant`: the service that opened a task
+is the one that may collect its approval.** The caller's subject has to equal
+`tasks.opened_by`, which `create_task` writes from the subject on the call that
+opened it. That subject is **attested** — the token service derives it from the
+authenticated client credential — which is the whole reason the gate is drawn
+there. It is not drawn on the run: `attribution.run_id` arrives empty on every
+call through the daemon, and the run on the row is a value the runner asserted,
+so a gate over the two refused everything and would have been one unattested
+claim against another. An identity that does not match is told **"no such
+task"**, the same answer a task that never existed gets, because a reason code
+per refusal is an oracle for which task ids exist.
+
+The limit is recorded in the comment on that function and belongs in any review
+of it: **within one runner, any run can read any task's approval.** The trust
+boundary is the service, and per-run isolation would need per-run credentials.
+Read that comment before changing the gate; `KNOWN-GAPS.md` carries what is left.
 
 ## Concurrency is instances, not goroutines
 

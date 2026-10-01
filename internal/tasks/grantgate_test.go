@@ -21,30 +21,51 @@ import (
 
 const (
 	theRun      = "run_01hq"
-	anotherRun  = "run_01hz"
+	theOpener   = "svc:agentd"
+	anotherSvc  = "svc:somebody-else"
 	theBearer   = "eyJhbGciOiJFUzI1NiJ9.a-signed-approval.sig"
 	theGrantJTI = "grn_01test"
 )
 
-// approved is a task in the one state that has an approval to hand over.
+// approved is a task in the one state that has an approval to hand over, opened
+// by the service that is allowed to collect it.
 func approved() store.Task {
 	return store.Task{
 		ID: "tsk_01test", Tenant: "example", Kind: store.KindApproval,
-		RunID: theRun, Requester: "user:asker@example.com",
+		RunID: theRun, Requester: "user:asker@example.com", OpenedBy: theOpener,
 		State: store.StateApproved, Decision: store.DecisionApprove,
 		GrantJTI: theGrantJTI, Grant: theBearer,
 	}
 }
 
-// theRunner is the caller the method exists for: the runner, on the task's own
-// run. Its RunID is set here by hand — garmd never sets one, which is the whole
-// subject of the gate's third step.
-func theRunner(runID string) Caller {
+// aService is a runner calling as itself: a SERVICE principal with an agent on
+// the delegation chain. Its subject is the one fact the gate reads, and the one
+// fact a caller cannot choose — the token service derives it from the
+// authenticated client credential — so a test that varies it is varying an
+// attested value rather than a claim.
+//
+// It carries NO run id, which is every call that arrives through the daemon:
+// garmd builds the invocation's attribution with a tenant and a correlation id
+// and never a run. A gate that read one would refuse everything, and that is why
+// this one does not read one.
+func aService(subject string) Caller {
 	return Caller{
-		Subject: "svc:agentd", Tenant: "example",
-		Kind:  toolv1.PrincipalKind_PRINCIPAL_KIND_SERVICE,
-		Act:   []Act{{Subject: "agent:example.agents.v1.Assistant", Kind: toolv1.PrincipalKind_PRINCIPAL_KIND_AGENT}},
-		RunID: runID, CallID: "ev_call_1",
+		Subject: subject, Tenant: "example",
+		Kind: toolv1.PrincipalKind_PRINCIPAL_KIND_SERVICE,
+		Act: []Act{{
+			Subject: "agent:example.agents.v1.Assistant",
+			Kind:    toolv1.PrincipalKind_PRINCIPAL_KIND_AGENT,
+		}},
+		CallID: "ev_call_1",
+	}
+}
+
+// aPerson is somebody at a keyboard calling for themselves. An approval is a
+// bearer minted for a run to present, and a person has no run to present it on.
+func aPerson(subject string) Caller {
+	return Caller{
+		Subject: subject, Tenant: "example",
+		Kind: toolv1.PrincipalKind_PRINCIPAL_KIND_USER, CallID: "ev_call_1",
 	}
 }
 
@@ -60,14 +81,31 @@ func codeOf(t *testing.T, err error) (string, string) {
 	return coded.Code, coded.Message
 }
 
-// A caller on another run is told what a caller of a task that never existed is
-// told. That is the point of the first step: the run gate must not become a way
-// to discover which task ids exist, or which of them are decided.
-func TestAnotherRunIsToldNoSuchTask(t *testing.T) {
+// THE SUCCESS PATH. The service that opened the task collects the approval it
+// was parked on.
+//
+// Nothing could reach this while the gate refused unconditionally, so this is
+// the first test of the case the method exists for. What makes it pass is the
+// caller's attested subject matching the service recorded on the row, and
+// nothing else: the call names no run, because no call through the daemon does.
+func TestTheOpeningServiceMayReadTheGrant(t *testing.T) {
 	s := &Service{}
-	code, why := codeOf(t, s.mayReadGrant(theRunner(anotherRun), approved()))
+	if err := s.mayReadGrant(aService(theOpener), approved()); err != nil {
+		code, why := codeOf(t, err)
+		t.Fatalf("the service that opened the task was refused %s (%s); this is the "+
+			"one caller the method exists for", code, why)
+	}
+}
+
+// Another service is told what a caller of a task that never existed is told.
+//
+// That is the point of putting the identity first: the gate must not become a
+// way to discover which task ids exist, or which of them are decided.
+func TestAnotherServiceIsToldNoSuchTask(t *testing.T) {
+	s := &Service{}
+	code, why := codeOf(t, s.mayReadGrant(aService(anotherSvc), approved()))
 	if code != CodeNoSuchTask {
-		t.Fatalf("another run got %s (%s), want %s", code, why, CodeNoSuchTask)
+		t.Fatalf("another service got %s (%s), want %s", code, why, CodeNoSuchTask)
 	}
 	if why != "no such task" {
 		t.Errorf("refusal is %q, want the words a missing task gets, with nothing "+
@@ -78,28 +116,50 @@ func TestAnotherRunIsToldNoSuchTask(t *testing.T) {
 	}
 
 	// And the same for a task in a state that has its own refusal. This is what
-	// pins the ORDER rather than the checks: the run gate applied after the state
+	// pins the ORDER rather than the checks: the identity applied after the state
 	// block would answer 409 here and tell a stranger that this task exists and
 	// was declined.
 	declined := approved()
 	declined.State, declined.Decision = store.StateDeclined, store.DecisionDecline
 	declined.Grant, declined.GrantJTI = "", ""
-	code, why = codeOf(t, s.mayReadGrant(theRunner(anotherRun), declined))
+	code, why = codeOf(t, s.mayReadGrant(aService(anotherSvc), declined))
 	if code != CodeNoSuchTask || why != "no such task" {
-		t.Errorf("another run asking about a declined task got %s (%s), want %s / "+
-			"no such task — the run gate has to come before the state block",
+		t.Errorf("another service asking about a declined task got %s (%s), want %s / "+
+			"no such task — the identity has to come before the state block",
 			code, why, CodeNoSuchTask)
 	}
 }
 
-// A call carrying no run at all is the case EVERY call through the daemon is
-// today, and it is refused the same way: garmd builds the attribution with a
-// tenant and a correlation id and never a run id.
-func TestACallNamingNoRunIsToldNoSuchTask(t *testing.T) {
+// A person is told the same, and the subject is deliberately the opening
+// service's own.
+//
+// So what refuses this is the KIND and not the name: `service:agentd` is a
+// service principal, and a user principal that managed to present that subject
+// is not the workload the grant was minted for. Pinning it with a matching
+// subject is the only way this test fails if the kind check is dropped.
+func TestAPersonIsToldNoSuchTask(t *testing.T) {
 	s := &Service{}
-	code, why := codeOf(t, s.mayReadGrant(theRunner(""), approved()))
+	code, why := codeOf(t, s.mayReadGrant(aPerson(theOpener), approved()))
 	if code != CodeNoSuchTask || why != "no such task" {
-		t.Fatalf("a call with no run got %s (%s), want %s / no such task",
+		t.Fatalf("a person got %s (%s), want %s / no such task", code, why, CodeNoSuchTask)
+	}
+}
+
+// A task opened before `opened_by` existed records no service, and so can never
+// hand its approval back.
+//
+// The column is additive, so every row written before the migration records no
+// opener. It fails CLOSED rather than matching an empty subject: a task whose
+// opener was never recorded is a task no caller can prove it opened. The run it
+// belongs to has to be decided again, and an operator is told — the caller is
+// told exactly what a stranger is told.
+func TestATaskWithNoOpenerRecordedIsToldNoSuchTask(t *testing.T) {
+	s := &Service{}
+	x := approved()
+	x.OpenedBy = ""
+	code, why := codeOf(t, s.mayReadGrant(aService(theOpener), x))
+	if code != CodeNoSuchTask || why != "no such task" {
+		t.Fatalf("a task with no opener recorded answered %s (%s), want %s / no such task",
 			code, why, CodeNoSuchTask)
 	}
 }
@@ -144,7 +204,7 @@ func TestAStateWithNoApprovalRefusesWithAReason(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			s := &Service{}
-			code, why := codeOf(t, s.mayReadGrant(theRunner(theRun), c.task()))
+			code, why := codeOf(t, s.mayReadGrant(aService(theOpener), c.task()))
 			if code != c.code {
 				t.Fatalf("%s answered %s (%s), want %s", c.name, code, why, c.code)
 			}
@@ -156,29 +216,6 @@ func TestAStateWithNoApprovalRefusesWithAReason(t *testing.T) {
 	}
 }
 
-// The method is UNREACHABLE BY DESIGN, and this is the test that says so.
-//
-// A caller on the task's own run, with an approved task and an approval recorded
-// against it, is still refused — because possession of a capability for this task
-// is what would authorise the read and nothing mints one yet. If this test starts
-// failing because the gate let the call through, the capability either landed (and
-// this test is now about the wrong thing) or the gate was removed, and the
-// difference is the whole of the security property.
-func TestTheGateRefusesEvenTheCallerItExistsFor(t *testing.T) {
-	s := &Service{}
-	code, why := codeOf(t, s.mayReadGrant(theRunner(theRun), approved()))
-	if code != CodeDenied {
-		t.Fatalf("the runner on its own run got %s (%s), want %s", code, why, CodeDenied)
-	}
-	if why != GrantGateUnimplementedMessage {
-		t.Errorf("refusal is %q, want the message that says a capability is what is "+
-			"missing rather than the caller's authority", why)
-	}
-	if strings.Contains(why, theBearer) {
-		t.Error("the refusal quotes the approval it refused to hand over")
-	}
-}
-
 // An approved task with no approval recorded is this service's own broken
 // invariant — Decide writes the state and the grant together — so the caller is
 // told nothing about it and an operator is.
@@ -186,8 +223,11 @@ func TestAnApprovedTaskWithNoApprovalIsThisServicesFault(t *testing.T) {
 	s := &Service{}
 	x := approved()
 	x.Grant = ""
-	code, why := codeOf(t, s.mayReadGrant(theRunner(theRun), x))
+	code, why := codeOf(t, s.mayReadGrant(aService(theOpener), x))
 	if code != CodeBroke {
 		t.Fatalf("an approved task with no grant answered %s (%s), want %s", code, why, CodeBroke)
+	}
+	if strings.Contains(why, theBearer) || strings.Contains(why, theGrantJTI) {
+		t.Errorf("refusal %q says something about the approval it could not read", why)
 	}
 }
