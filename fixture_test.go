@@ -55,8 +55,8 @@ const (
 	theApprove = "user:approver@example.com"
 	// The runner's own identity. A task is opened BY this and FOR theAsker.
 	theRunnerSvc = "svc:agentd"
-	theTool    = "payments.v1.initiate_payment"
-	theSubject = "account:A-1"
+	theTool      = "payments.v1.initiate_payment"
+	theSubject   = "account:A-1"
 )
 
 // The routes, as the contract names them.
