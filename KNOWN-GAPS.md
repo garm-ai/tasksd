@@ -54,11 +54,25 @@ rather than assumed, and the value is written down in
 `internal/tasks/contract_test.go` so it cannot move unnoticed: it was
 `3a9113cd…ff69` before the move and after it. So nothing quarantines.
 
-The value is **no longer** that one. `requester` on `CreateTaskRequest` moved it
-to `6d981dae…3e50` on 2026-10-01 — a field, which the hash does read — and
-`escalation` on `create_task` did **not** move it again the same day, because a
-tool set is an option. Both repositories carry both changes identically, so the
-two copies still hash alike and the overlap is still safe.
+The value is **no longer** that one, and it moved twice on 2026-10-01.
+`requester` on `CreateTaskRequest` took it to `6d981dae…3e50` — a field, which the
+hash does read — while `escalation` on `create_task` did **not** move it, because a
+tool set is an option. Then one round moved it twice more, batched on purpose because each move costs a
+catalogue rebuild and a command line tool release: `GetTaskGrant` took it to
+`b80da142…3df2` — its request and its answer are both new messages, four fields
+the walk did not cover — and `run_id` on `CreateTaskRequest` took it to
+**`8939ac00b2a441346826759b77d72dc568a9bb0fa32d50732cc72b3c166b5a63`**, which is
+the current value. `get_task_grant` going from `VERB_WRITE` to `VERB_READ` in the
+same round moved it not at all, a verb being an option, confirmed either side
+rather than assumed. **Every catalogue carrying `garm.tasks.v1` has to be rebuilt
+by a command line tool linking contracts at these changes, and until it is, garmd
+quarantines this service on the mismatch.**
+
+Both repositories carry all of it identically, so the two copies still hash alike
+and the overlap is still safe. That is now guarded from both ends: the contract
+module pins the same constant in `garm/tasks/v1/wireshape_test.go`, computed from
+its own descriptor. Before that only this repository's constant existed, so an
+edit there could move the shape and nothing in that repository would say so.
 
 *What is left.* Two steps, neither of them this repository's:
 
@@ -104,18 +118,72 @@ the number is agreed between two repositories and writing it down on both sides
 is the only thing that can keep them agreeing. A mismatch is loud rather than
 silent either way: the daemon refuses to route and says which package and why.
 
-**Nothing here can reach a task back on resume with `escalation` alone.**
-`create_task` is in a set of its own so that the runner's service principal can
-be granted the reach to open a task and nothing more — it holds `escalation` and
-is refused every other method of this contract. The resume path needs more than
-that: the decided event carries a task id and an outcome and never the grant
-(ruling R5), so a runner that wakes has to read the task back through `get_task`,
-which is in `triage`. Granting the runner `triage` would hand every run it
-executes the whole queue, including `claim_task` and `triage_task`, so that is
-not the answer either and the question is open. Whatever closes it is a change to
-this contract, not a deployment's workaround: either `get_task` gains a second
-set, or a narrower read for a runner is declared. **Until then a runner can open
-a task and cannot read it back.**
+**`get_task_grant` exists and its gate refuses every caller. The resume path
+does not work, and this is the entry that says why.**
+
+The read back is no longer missing from the contract. `escalation` holds
+`create_task` and `get_task_grant` — two halves of one act — and the method
+declares `verb: VERB_READ`, `min_clearance: CLEARANCE_PUBLIC`, no compartment and
+that one set.
+
+**The verb cost the runner's policy a line, and that is the right way round.** An
+earlier revision declared `VERB_WRITE` so that nothing outside these two
+repositories had to change: garmd's visibility predicate is an AND over verb,
+clearance, compartments and sets with no implication between verbs, and the runner
+held `verbs: [WRITE]`. But the call returns a value and moves nothing — which its
+own `effects.idempotent` already says — so WRITE put a write in the catalogue an
+auditor reads where nothing is written, and made "the policy is too narrow" a
+thing you fix by relabelling the tool. The runner is granted `READ` in
+`sts/deploy/claims.yaml` and `examples/bank/auth/claims.yaml` instead, and **the
+set bounds that and not the verb**: scoped to `escalation`, which holds these two
+tools and nothing else, READ reaches one more method rather than every
+`CLEARANCE_PUBLIC`, uncompartmented, `VERB_READ` tool in the mounted catalogue.
+
+**What is missing is anything to gate on.** The ruling is that a runner may read
+the grant of a task whose `run_id` is the run the call carries and no other,
+because an audience is a listing rule and `AUDIENCE_RUNNER` alone would leave
+every runner able to read every task's grant. `Caller.RunID` comes from
+`InvocationContext.attribution.run_id`, and **garmd never writes that field**: it
+builds the attribution with a tenant and a correlation id and nothing else
+(`internal/toolplane/core.go`, `withInvocationContext`). So the value arrives empty
+on every call through the daemon, whatever the runner put on its own request, and
+a gate comparing it to the task's run id refuses everything.
+
+`mayReadGrant` is implemented that way on purpose, and its third step refuses
+unconditionally on top — because making a run id travel would not fix it either: a
+caller-supplied run id is an assertion nothing checked, and a gate reading one is
+a gate any runner passes by naming somebody else's run. **The method is therefore
+unreachable by design rather than wrongly reachable, and a run that parks still
+cannot resume.** The refusal names the capability rather than the caller's
+authority, so the next person to see it knows this is unbuilt and not
+misconfigured.
+
+The answer being designed is an opaque single-task capability `create_task`
+returns and the runner presents — possession rather than an assertion.
+`GetTaskGrantRequest` is a message of its own rather than the shared
+`garm.card.v1.TaskRef`, so that capability lands as field 2 of a message only this
+method takes; **it will move the wire shape a third time**, and declaring the
+field before the decision is made would be guessing a contract.
+
+**The same emptiness used to break `create_task`, and that half is fixed.**
+`Create` requires a run to have something to signal, and it read
+`attribution.run_id` — so every `create_task` arriving through the daemon was
+refused, which is why nothing in the platform had ever opened a task on this
+service. It now takes the run from `CreateTaskRequest.run_id`, a field the runner
+sets, because the runner is the only party that knows which run it is executing
+and teaching garmd about runs is not available: knowing nothing about agents or
+runs is one of that daemon's invariants, and `CallContext.run_id` existing is not
+permission to make it fill one in.
+
+That field is an **assertion** — nothing attests it — and it is used for
+**routing** and never for authorization. It keys
+`garm.tasks.v1.decided.<tenant>.<run_id>`, and routing decides who hears a
+decision, never who may act on one. So the worst a runner can do by naming
+somebody else's run is wake it spuriously; that runner then goes to collect the
+approval and is refused, holding no capability for a task that was never its.
+Noise, not privilege. It is also why the gate above cannot be built on the same
+value: a run id asserted on the create and a run id asserted on the read would be
+one unattested claim checked against another.
 
 **A triage decline is a decision made outside the claim.** `triage_task`
 admits a person and an agent, and a DECLINE through it refuses the requester
@@ -124,12 +192,18 @@ because the design does not ask it to. Somebody who learns a task id and is
 inside the tenant can therefore decline a task they never claimed. Until the
 daemon's instance authorization lands, four eyes is the guard on that path.
 
-**The invocation carries no runner identity.** §4.4 asks `create_task` to
-check that an execution identity is present beside the delegation chain.
-`garm.tool.v1.InvocationContext` has no such field at `contracts` v0.2.0, so
-what is checked is that the principal is a person, that the chain names an
-agent, and that a run id is on the call. The check gets stricter when the
-contract carries the identity.
+**The invocation carries no runner identity, and no run id either.** §4.4 asks
+`create_task` to check that an execution identity is present beside the delegation
+chain. `garm.tool.v1.InvocationContext` has no such field, so what is checked is
+the principal's kind, that the chain names an agent, and that a run id is on the
+call. The check gets stricter when the contract carries the identity.
+
+The run id is not a contract gap and is no longer a gap in `Create` either:
+`CallContext.run_id` is declared, `garmd` never sets it, and `Create` therefore
+takes the run from its own request field instead. What still fails closed on every
+call through the daemon is the gate on `get_task_grant`, which is the entry above —
+and `Caller.RunID` is kept rather than retired, because it is read there and
+retiring it is not this change's to make.
 
 **Nothing here spends an approval.** Single use belongs to the daemon, which
 holds the replay cache. An approval replayed at this service closes a task

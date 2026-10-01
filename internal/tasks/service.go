@@ -78,7 +78,13 @@ type CreateInput struct {
 	// Requester is the person the task is opened FOR, and the one person
 	// four-eyes excludes from deciding it. It comes from the request because
 	// the CALLER is a runner acting for that person, not the person.
-	Requester       string
+	Requester string
+	// RunID is the run to tell when this task is decided. It comes from the
+	// REQUEST and not from the invocation, because garmd never puts a run id on
+	// one — and must not learn how, knowing nothing about runs being one of that
+	// daemon's invariants. It is an assertion used for routing and never for
+	// authorization; the field's own comment in the proto has the whole of it.
+	RunID           string
 	Material        map[string]string
 	Predicate       store.Predicate
 	ExpiresIn       time.Duration
@@ -89,12 +95,22 @@ type CreateInput struct {
 
 // Create opens a task for the run the caller is executing.
 //
-// The caller is a runner acting as an agent for a person: the principal is
-// the person the run belongs to, the chain names the agent, and the run id
-// is on the invocation. All three are required, because each of them is
-// something the task cannot be answered without — there is nobody to exclude
-// from deciding without the requester, nothing to signal without the run,
-// and no way to attribute the ask without the agent.
+// The caller is a runner acting as an agent for a person: the principal is the
+// service, the chain names the agent, and the REQUEST names the person and the
+// run. All four are required, because each is something the task cannot be
+// answered without — there is nobody to exclude from deciding without the
+// requester, nothing to signal without the run, and no way to attribute the ask
+// without the agent.
+//
+// THE RUN COMES FROM THE REQUEST, and that is what made this method reachable.
+// It used to read `attribution.run_id`, which garmd never sets: the daemon builds
+// an invocation with a tenant and a correlation id and reads an incoming
+// attribution for the correlation id alone. So every call that arrived through
+// the daemon named no run and was refused, and nothing in the platform had ever
+// opened a task on this service. Teaching the daemon about runs was not the fix —
+// knowing nothing about agents or runs is one of its invariants — so the runner,
+// which is the only party that knows which run it is executing, says so in the
+// request.
 //
 // It is idempotent on the run, the tool and the values: a runner that
 // retries after a timeout it never saw the answer to gets the task it
@@ -112,8 +128,9 @@ func (s *Service) Create(ctx context.Context, c Caller, in CreateInput) (store.T
 		return store.Task{}, refuse(CodeDenied,
 			"a task is opened by a runner acting as an agent: the call carries no agent")
 	}
-	if c.RunID == "" {
-		return store.Task{}, refuse(CodeRefused, "the call names no run to signal")
+	if in.RunID == "" {
+		return store.Task{}, refuse(CodeRefused,
+			"the request names no run_id, so there is nothing to tell when this is decided")
 	}
 	kind := in.Kind
 	if kind == "" {
@@ -142,7 +159,7 @@ func (s *Service) Create(ctx context.Context, c Caller, in CreateInput) (store.T
 
 	now := s.now()
 	t := store.Task{
-		ID: s.newID(), Tenant: c.Tenant, Kind: kind, RunID: c.RunID,
+		ID: s.newID(), Tenant: c.Tenant, Kind: kind, RunID: in.RunID,
 		Requester: in.Requester, Agent: c.Agent(), ToolFQN: in.Tool, Subject: in.Subject,
 		Material: in.Material, MaterialDigest: grant.Digest(in.Material),
 		Predicate: in.Predicate, State: store.StateOpen,
@@ -152,14 +169,14 @@ func (s *Service) Create(ctx context.Context, c Caller, in CreateInput) (store.T
 	}
 	out, created, err := s.DB.Create(ctx, t, store.Event{
 		At: now, Actor: c.Agent(), Kind: "created",
-		Detail: map[string]any{"tool": in.Tool, "requester": c.Subject, "kind": string(kind)},
+		Detail: map[string]any{"tool": in.Tool, "requester": in.Requester, "kind": string(kind)},
 	})
 	if err != nil {
 		return store.Task{}, s.fromStore(err, "a task could not be opened")
 	}
 	s.log().Info("task opened", "task", out.ID, "created", created,
-		"tenant", c.Tenant, "run", c.RunID, "tool", in.Tool,
-		"requester", c.Subject, "agent", c.Agent(), "call_id", c.CallID)
+		"tenant", c.Tenant, "run", in.RunID, "tool", in.Tool,
+		"requester", in.Requester, "agent", c.Agent(), "call_id", c.CallID)
 	return out, nil
 }
 
@@ -239,6 +256,133 @@ func (s *Service) Trail(ctx context.Context, t store.Task) ([]store.Event, []sto
 		return nil, nil, s.fromStore(err, "a task's triage could not be read")
 	}
 	return evs, tr, nil
+}
+
+// ------------------------------------------------------------- the read back
+
+// Approval is the answer of get_task_grant: the credential, its identifier, and
+// the task it closed.
+//
+// Not store.Task. A method that exists to hand over ONE credential should not
+// also be a projection of the row — what a woken run needs is the grant to
+// re-dispatch the call it was parked on, and nothing else.
+type Approval struct {
+	TaskID string
+	// Grant is the bearer the deciding person's own client minted. It reaches no
+	// log line and no trail entry here, and the method's audit annotation keeps
+	// it out of the ledger by value.
+	Grant string
+	// GrantJTI identifies the approval without being one, which is what a
+	// runner records and what this service logs.
+	GrantJTI string
+}
+
+// GrantGateUnimplementedMessage is what every caller of get_task_grant is told
+// today, and the reason is in mayReadGrant below: there is nothing attested on a
+// call that says which run it belongs to, so the per-task gate cannot be
+// implemented and the method refuses rather than guessing.
+const GrantGateUnimplementedMessage = "the approval cannot be handed over: reading one " +
+	"back requires possession of a capability for this task, and nothing attested on " +
+	"this call can stand in for one"
+
+// ReadGrant hands a parked run the approval its task was decided with.
+//
+// The decided event carries a task id and an outcome and never the grant (R5) —
+// a bearer on a stream is readable by anything that can consume the subject for
+// that stream's retention, and a replay would replay a credential. So a woken run
+// fetches the approval here instead, and without this it fails with no grant
+// while the approval sits in this service's own store.
+//
+// Everything deciding whether the caller may have it is in mayReadGrant, in one
+// function and deliberately: it is the only check standing between a scoped
+// caller and a credential, and a reader looking for it should not have to
+// assemble it out of three places.
+func (s *Service) ReadGrant(ctx context.Context, c Caller, taskID string) (Approval, error) {
+	t, err := s.Get(ctx, c, taskID)
+	if err != nil {
+		return Approval{}, err
+	}
+	if err := s.mayReadGrant(c, t); err != nil {
+		return Approval{}, err
+	}
+	// The identifier and never the approval. This is the one log line on the
+	// credential path, and what it says is which approval was collected, by
+	// whom, for which run.
+	s.log().Info("a run collected its approval", "task", t.ID, "run", t.RunID,
+		"grant_jti", t.GrantJTI, "caller", c.Subject, "call_id", c.CallID)
+	return Approval{TaskID: t.ID, Grant: t.Grant, GrantJTI: t.GrantJTI}, nil
+}
+
+// mayReadGrant is the gate on get_task_grant, and the one place to change when
+// the capability below lands.
+//
+// THE THIRD STEP REFUSES UNCONDITIONALLY, AND THAT IS THE CURRENT STATE OF THE
+// FEATURE RATHER THAN A BUG. Step 1 is the gate the ruling asks for — a caller
+// may read the grant of a task whose run is the run the call carries, and no
+// other — and the fact it rests on does not exist: garmd builds the invocation's
+// attribution with a tenant and a correlation id and nothing else
+// (`internal/toolplane/core.go`, withInvocationContext), so
+// `CallContext.run_id` arrives EMPTY on every call through the daemon, whatever
+// the runner put on its own request. Audience is no substitute: an audience
+// decides who is OFFERED a tool and gates nothing, so AUDIENCE_RUNNER alone would
+// leave every runner able to read every task's grant.
+//
+// The answer being designed is an opaque single-task capability `create_task`
+// returns and the runner presents on GetTaskGrantRequest — possession rather than
+// an unattested assertion. Until it exists this method is UNREACHABLE BY DESIGN:
+// step 1 already refuses every call that arrives through the daemon, and step 3
+// is why making run_id travel would not quietly open it.
+//
+// Note what step 1 would be comparing if it did. The task's own run id is a field
+// the RUNNER set on create_task, which nothing attests either, so this would be
+// one assertion checked against another. That is fine for what the task's run id
+// is for — routing a decision to whoever is listening, which decides who hears
+// and never who may — and it is exactly why it cannot be the authorization check
+// as well. Both halves of this gate go when the capability arrives, and the TODO
+// is on the one that replaces them.
+//
+// TODO(garm-ai/tasksd): replace step 3 with the capability check once
+// `create_task` mints one, and KNOWN-GAPS.md carries the rest.
+//
+// The order matters as much as the checks. The run comes first and answers
+// exactly what a task that never existed answers, so a caller on another run
+// learns nothing about this one — not its state, not that it is there. Only a
+// caller already on the task's own run reaches the refusals below it.
+func (s *Service) mayReadGrant(c Caller, t store.Task) error {
+	// 1. The run. "no such task", because a caller who is not this run must not
+	//    be able to tell a task they may not read from one that is not there.
+	if c.RunID == "" || c.RunID != t.RunID {
+		return refuse(CodeNoSuchTask, "no such task")
+	}
+
+	// 2. Something to hand over. A refusal with a reason and never an empty
+	//    success: a run told "here is your approval: nothing" would present an
+	//    empty grant and be refused at the daemon with no reason anybody can
+	//    trace back to the decline that caused it.
+	switch {
+	case t.Kind != store.KindApproval:
+		return refuse(CodeRefused,
+			"this task is a question, not an approval: it was answered and minted no grant")
+	case t.State == store.StateOpen || t.State == store.StateClaimed:
+		return refuse(CodeConflict, "this task is not decided yet, so there is no approval")
+	case t.State == store.StateDeclined:
+		return refuse(CodeConflict,
+			"this task was declined: a decline authorises nothing and mints no approval")
+	case t.State == store.StateExpired:
+		return refuse(CodeConflict,
+			"this task expired undecided, so no approval was ever minted")
+	case t.State != store.StateApproved:
+		return refusef(CodeConflict, "this task is %s, and only an approved task has an approval", t.State)
+	case t.Grant == "":
+		// An approved task with no grant recorded is a broken invariant of this
+		// service, not something the caller did. Decide records both together.
+		s.log().Error("an approved task carries no approval to hand back",
+			"task", t.ID, "run", t.RunID, "grant_jti", t.GrantJTI)
+		return refuse(CodeBroke, "the approval recorded for this task could not be read")
+	}
+
+	// 3. Possession, which nothing can yet demonstrate.
+	return refuse(CodeDenied, GrantGateUnimplementedMessage)
 }
 
 // ---------------------------------------------------------------- claim

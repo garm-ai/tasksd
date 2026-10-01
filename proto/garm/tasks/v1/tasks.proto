@@ -83,13 +83,23 @@ option go_package = "github.com/garm-ai/tasksd/gen/garm/tasks/v1;tasksv1";
 // holds, every run it executes can reach. A set states the reach instead of
 // leaving it to be inferred from clearance arithmetic.
 //
-// It holds create_task ALONE, and that is the ruling rather than an oversight. A
-// caller granted `escalation` can open a task and do nothing else: not list the
-// queue, not read a task back, not claim, decide or triage. Reading a task back
-// is a real need — the decided event carries a reference and not a grant, so a
-// runner that wakes fetches the task — and it is deliberately not answered here,
-// because get_task is in `triage` and widening this set to reach it would hand
-// every run the queue. KNOWN-GAPS.md carries that as open.
+// It holds create_task and get_task_grant, and nothing else. The pair is the
+// ruling rather than a convenience: opening an escalation and collecting its
+// answer are two halves of ONE act, so a caller granted this set can park a run
+// on a decision and pick that decision up, and can do nothing else — not list
+// the queue, not read a task back, not claim, decide or triage.
+//
+// Membership is pinned BY NAME in a test on both copies of this package, because
+// the principal holding this set is the whole platform's runner, and whatever it
+// carries, every run it executes can reach. A method added here later is reach
+// handed to every run, which is the kind of thing that rots quietly under review.
+//
+// The read back used to be the gap this set left open, and it is the gap
+// get_task_grant closes. The decided event carries a reference and never the
+// grant, so a waking runner has to fetch the approval — and get_task, the obvious
+// way, is in `triage`, so widening this set to reach it would hand every run the
+// queue. One method returning one credential is a boundary instead; the rpc
+// below carries the rest of that reasoning.
 option (garm.tool.v1.tool_sets) = {
   declared: [
     { name: "triage" description: "Task triage, offered to an agent whose manifest lists it." },
@@ -119,6 +129,83 @@ service TasksService {
       sets: ["escalation"]
       approval: { mode: MODE_NONE }
       effects: { idempotent: true reversibility: REVERSIBILITY_FULL }
+    };
+  }
+
+  // A runner collects the approval a decision minted, for the run that was
+  // parked on it.
+  //
+  // THE DECIDED EVENT CARRIES A REFERENCE AND NEVER THE GRANT. A bearer
+  // published to a stream is readable by anything that can consume the subject
+  // for that stream's whole retention, and a replayed message would replay a
+  // credential — so the event says which task was decided and how, and the
+  // approval is fetched here as a governed call instead. Without this method a
+  // woken run has nothing to present and fails with no grant, which is how the
+  // gap was found: by implementing the consumer.
+  //
+  // NOT A FIELD ON `Task`. That projection is read by Studio and by people, and
+  // a bearer in a widely-read message is the thing the reference exists to
+  // prevent. A field policy would not fix it either: the credential would still
+  // be in that message, and its omission would depend on every reader of it
+  // evaluating policy correctly. A separate method is a boundary rather than a
+  // rule.
+  //
+  // VERB_READ, because that is what the call does. It returns a value and moves
+  // nothing: the approval stays where the decision put it, which is the same fact
+  // `effects.idempotent` states. A verb is a description of the act before it is
+  // a policy axis, and this vocabulary is garm's own with no upstream to appeal
+  // to — so it is worth exactly what each declaration keeps it worth, and a
+  // method declaring WRITE where nothing is written is a catalogue lying to the
+  // auditor who reads it.
+  //
+  // The runner is granted READ for it, in `sts/deploy/claims.yaml` and
+  // `examples/bank/auth/claims.yaml`. **The SET is what bounds that widening,
+  // not the verb.** That principal is scoped to `tool_sets: [escalation]`, which
+  // holds create_task and this method and nothing else, and no other contract in
+  // the platform declares a set by that name — so READ reaches this one method
+  // and nothing more. Scoping it the other way round, by keeping the verb narrow
+  // and the set wide, is what a set exists to make unnecessary.
+  //
+  // READ does not mean cheap to hand out. The disclosure is irreversible, which
+  // `effects.reversibility` says, and what keeps it safe is below: one set, one
+  // audience, and a per-task check in the service.
+  //
+  // CLEARANCE_PUBLIC and no compartment, for the reason every method in this
+  // file is public at the method gate: a method-level predicate would have to be
+  // the lowest any tool in the deployment declares, which is no gate at all.
+  // What protects this credential is that one set, one audience and a per-task
+  // check in the service reach it — and the per-task check is the honest
+  // weakness today, recorded on GetTaskGrantRequest and in KNOWN-GAPS.md.
+  rpc GetTaskGrant(GetTaskGrantRequest) returns (TaskGrant) {
+    option (garm.tool.v1.tool) = {
+      name: "get_task_grant"
+      title: "Collect a task's approval"
+      description: "The approval a decided task minted, for the run that was waiting on it."
+      verb: VERB_READ
+      min_clearance: CLEARANCE_PUBLIC
+      audience: [AUDIENCE_RUNNER]
+      // `escalation`, beside create_task and nothing else, because opening an
+      // escalation and collecting its answer are two halves of one act — which is
+      // what naming a set for the ACT rather than for the caller buys. The runner
+      // already holds this set to open a task, so the only thing a claims policy
+      // adds for this method is the verb above, and the set is what stops that
+      // verb reaching anything else.
+      sets: ["escalation"]
+      approval: { mode: MODE_NONE }
+      // Idempotent because the row does not move: the grant stays where the
+      // decision put it, so a runner retrying a call it never saw the answer to
+      // collects the same approval rather than a second one. Irreversible
+      // because a disclosure is, and REVERSIBILITY_UNSPECIFIED would read the
+      // same way by failing closed — saying it is cheaper than making a reader
+      // check.
+      effects: { idempotent: true reversibility: REVERSIBILITY_NONE }
+      // Neither half of this call is written down by value. The response holds
+      // the bearer, and the request is where a single-task capability lands, so
+      // a ledger row carrying either would be the leak this method is shaped to
+      // avoid. What an auditor reads is the row itself: who collected which
+      // task's approval, and when. fail_closed, because a disclosure nobody can
+      // show the record of is worse than a run that waits.
+      audit: { level: LEVEL_AUDIT record_request: false record_response: false retain_days: 2555 fail_closed: true }
     };
   }
 
@@ -313,7 +400,9 @@ message Predicate {
 // task; a field policy is per descriptor and cannot. The two fields with a
 // static RESTRICTED read policy are the ones whose value is data for a
 // machine rather than something a person reads: the runner reads an answer as
-// the agent, and nothing reads a grant back.
+// the agent, and nothing reads a grant back OUT OF THESE MESSAGES. A grant is
+// read back, by get_task_grant, out of a message of its own that no projection
+// returns — which is the point of it being a separate method.
 
 message CreateTaskRequest {
   option (garm.tool.v1.default_field_policy) = { read: CLEARANCE_PUBLIC on_deny: { omit: {} } };
@@ -343,11 +432,94 @@ message CreateTaskRequest {
   // a tool service must not treat it as a way to open a task against an
   // arbitrary subject.
   optional string requester = 10 [(buf.validate.field).string.max_len = 200];
+
+  // The run this task is opened for, and the run the decision is addressed to.
+  // REQUIRED: a task whose answer can reach nothing is a person asked a question
+  // for no reason.
+  //
+  // IT IS A FIELD BECAUSE THE DAEMON DOES NOT KNOW WHAT A RUN IS, AND MUST NOT
+  // LEARN. `garm.tool.v1.CallContext` declares `run_id` and garmd never writes
+  // it: it builds an invocation with a tenant and a correlation id, and reads an
+  // incoming attribution for the correlation id alone. So a tool service asking
+  // the invocation for a run was asking for something that never arrives, and
+  // create_task was refused on every call that reached it through the daemon —
+  // which is why nothing in the platform had ever opened a task. The field's
+  // existence on CallContext is not permission to make the daemon fill it:
+  // knowing nothing about agents or runs is one of garmd's invariants, and run
+  // semantics in the daemon is precisely what that invariant forbids.
+  //
+  // The runner is the only party that knows which run it is executing, so the
+  // runner says so — here, in the request a reviewer reads and the audit row
+  // records, rather than in a header's side channel.
+  //
+  // IT IS AN ASSERTION. Nothing attests it. That is acceptable because of what it
+  // is used for: ROUTING, and never authorization. It keys the subject the
+  // decided event is published on, and routing decides who HEARS a decision,
+  // never who MAY act on one. Authorization is the per-task capability
+  // get_task_grant requires.
+  //
+  // So the worst a runner can do by naming a run that is not its own is cause a
+  // SPURIOUS WAKE on that run's subject. That runner then goes to collect the
+  // approval and is refused, holding no capability for a task that was never
+  // its. Noise, not privilege — and a reader who reaches for the word "hole"
+  // here has mistaken which question this field answers.
+  optional string run_id = 11 [(buf.validate.field).string.max_len = 200];
 }
 
 message CreateTaskResponse {
   option (garm.tool.v1.default_field_policy) = { read: CLEARANCE_PUBLIC on_deny: { omit: {} } };
   optional string task_id = 1;
+}
+
+// GetTaskGrantRequest names the task whose approval is being collected.
+//
+// A message of its own rather than `garm.card.v1.TaskRef`, which the four other
+// per-task methods share, and the reason is the gate rather than style. The
+// service has to decide that this caller IS the run that was parked on this
+// task, and the attested fact that would settle it does not exist yet: garmd
+// builds the invocation's attribution with a tenant and a correlation id and
+// never a run id, so `run_id` reaches a tool service empty however the runner
+// fills it in. The answer being designed is an opaque single-task capability
+// `create_task` returns and the runner presents here — possession rather than an
+// unattested assertion — and that is a FIELD on this message. On TaskRef it
+// would be a field on a message four unrelated methods take, where on three of
+// them it would mean nothing.
+//
+// It lands as field 2, and the cost is stated rather than hidden: a new field
+// moves the wire shape, so every catalogue carrying garm.tasks.v1 is rebuilt
+// once more. Declaring the field now to save that rebuild would mean guessing
+// the shape of a contract that is being decided, which is the more expensive
+// mistake of the two.
+message GetTaskGrantRequest {
+  option (garm.tool.v1.default_field_policy) = { read: CLEARANCE_PUBLIC on_deny: { omit: {} } };
+  optional string task_id = 1 [(buf.validate.field).required = true];
+}
+
+// TaskGrant is the approval, and the answer of one method and nothing else.
+//
+// The grant below is PUBLIC to the field-policy walk, and that is the one thing
+// in this message to read twice. A RESTRICTED read policy is the obvious move
+// and it would break the method: the deployment's runner holds
+// CLEARANCE_PUBLIC, so the daemon would omit the field and hand the waking run
+// an empty success — the no-grant failure this method exists to fix, arrived at
+// from the other direction. The credential is kept by a boundary instead: one
+// method, in one set, for one audience, after the service's own per-task check.
+// A rule that every reader of a shared message has to evaluate correctly is what
+// the ruling against putting this on `Task` rejected.
+message TaskGrant {
+  option (garm.tool.v1.default_field_policy) = { read: CLEARANCE_PUBLIC on_deny: { omit: {} } };
+  optional string task_id = 1;
+
+  // The approval, as the deciding person's own client minted it: single-use,
+  // bound to this task and these values, and fifteen minutes old at most. The
+  // runner presents it to the daemon as the grant for the call its run was
+  // parked on, and it reaches no log line and no ledger row by value.
+  optional string grant = 2;
+
+  // The approval's identifier, so a runner can record WHICH approval it
+  // collected without recording the approval. `Task.grant_jti` is the same
+  // value, and is the only thing about a grant that projection carries.
+  optional string grant_jti = 3;
 }
 
 message ListTasksRequest {

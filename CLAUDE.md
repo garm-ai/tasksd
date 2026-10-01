@@ -6,11 +6,21 @@ with its own Postgres, reached through `garmd` like every other tool.
 
 ## The four rules
 
-**1. Every rule comes from `Garm-Invocation`.** The subject, the tenant, the
-delegation chain and the run id are what this service knows about a caller,
-and there is nothing else: no token, no clearance, no compartments. A tool
-that could see a clearance is a tool that would start filtering on one, and
-which tasks a viewer may see is a label on the card that `garmd` projects.
+**1. Every rule comes from `Garm-Invocation`.** The subject, the tenant and the
+delegation chain are what this service knows about a caller, and there is
+nothing else: no token, no clearance, no compartments. A tool that could see a
+clearance is a tool that would start filtering on one, and which tasks a viewer
+may see is a label on the card that `garmd` projects.
+
+**The run is NOT one of them, and reading it from there was a bug.**
+`CallContext.run_id` is declared and `garmd` never sets it — the daemon builds an
+invocation with a tenant and a correlation id, knowing nothing about agents or
+runs being one of its invariants — so `create_task` was refused on every call that
+arrived through the daemon until the run moved onto `CreateTaskRequest.run_id`.
+That field is an assertion, used for routing a decision and never for authorizing
+one; the proto's comment on it is the place to read why that is sound.
+`Caller.RunID` remains and is still read by `get_task_grant`'s gate, where it is
+part of why that gate refuses everything.
 
 **2. This service never says yes on a person's behalf.** It does not mint an
 approval and it cannot: the approver's own client mints one against the
@@ -61,7 +71,7 @@ is why these are checks and not conventions: `go build` is green either way.
 ## Layout
 
 ```
-proto/garm/tasks/v1/  the contract: eight tools, the messages, the policies
+proto/garm/tasks/v1/  the contract: nine tools, the messages, the policies
 gen/garm/tasks/v1/    the Go it generates, committed; `mise run gen-check`
                       refuses a copy that has drifted from the proto
 third_party/proto/    the annotations and the card, vendored so the contract's
@@ -91,6 +101,14 @@ The one thing that is not there is the approval itself:
 `internal/tasks/grant.go` holds it to the task, over
 `github.com/garm-ai/contracts/grants` — the shared verification both this
 service and the daemon use, so the binding is written once.
+
+**`mayReadGrant` is the gate on `get_task_grant`, and it refuses everything.**
+That is the state of the feature, not a bug to fix in passing. Its third step is
+an unconditional denial because the check the ruling asks for — a runner may read
+the grant of the task its own run was parked on, and no other — rests on a run id
+that `garmd` never puts on an invocation, and because an audience gates nothing.
+Read the comment on that function before changing it: a capability `create_task`
+mints is what replaces both halves, and `KNOWN-GAPS.md` carries the rest.
 
 ## Concurrency is instances, not goroutines
 

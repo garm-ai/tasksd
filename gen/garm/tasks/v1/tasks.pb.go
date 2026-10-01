@@ -272,7 +272,7 @@ func (x ListTasksRequest_View) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use ListTasksRequest_View.Descriptor instead.
 func (ListTasksRequest_View) EnumDescriptor() ([]byte, []int) {
-	return file_garm_tasks_v1_tasks_proto_rawDescGZIP(), []int{3, 0}
+	return file_garm_tasks_v1_tasks_proto_rawDescGZIP(), []int{5, 0}
 }
 
 type TriageTaskRequest_Action int32
@@ -327,7 +327,7 @@ func (x TriageTaskRequest_Action) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use TriageTaskRequest_Action.Descriptor instead.
 func (TriageTaskRequest_Action) EnumDescriptor() ([]byte, []int) {
-	return file_garm_tasks_v1_tasks_proto_rawDescGZIP(), []int{7, 0}
+	return file_garm_tasks_v1_tasks_proto_rawDescGZIP(), []int{9, 0}
 }
 
 // Who may see and decide this task: the tool's approval block, or the
@@ -411,7 +411,38 @@ type CreateTaskRequest struct {
 	// Set by the RUNNER from the run's own principal. A model never sets it, and
 	// a tool service must not treat it as a way to open a task against an
 	// arbitrary subject.
-	Requester     *string `protobuf:"bytes,10,opt,name=requester,proto3,oneof" json:"requester,omitempty"`
+	Requester *string `protobuf:"bytes,10,opt,name=requester,proto3,oneof" json:"requester,omitempty"`
+	// The run this task is opened for, and the run the decision is addressed to.
+	// REQUIRED: a task whose answer can reach nothing is a person asked a question
+	// for no reason.
+	//
+	// IT IS A FIELD BECAUSE THE DAEMON DOES NOT KNOW WHAT A RUN IS, AND MUST NOT
+	// LEARN. `garm.tool.v1.CallContext` declares `run_id` and garmd never writes
+	// it: it builds an invocation with a tenant and a correlation id, and reads an
+	// incoming attribution for the correlation id alone. So a tool service asking
+	// the invocation for a run was asking for something that never arrives, and
+	// create_task was refused on every call that reached it through the daemon —
+	// which is why nothing in the platform had ever opened a task. The field's
+	// existence on CallContext is not permission to make the daemon fill it:
+	// knowing nothing about agents or runs is one of garmd's invariants, and run
+	// semantics in the daemon is precisely what that invariant forbids.
+	//
+	// The runner is the only party that knows which run it is executing, so the
+	// runner says so — here, in the request a reviewer reads and the audit row
+	// records, rather than in a header's side channel.
+	//
+	// IT IS AN ASSERTION. Nothing attests it. That is acceptable because of what it
+	// is used for: ROUTING, and never authorization. It keys the subject the
+	// decided event is published on, and routing decides who HEARS a decision,
+	// never who MAY act on one. Authorization is the per-task capability
+	// get_task_grant requires.
+	//
+	// So the worst a runner can do by naming a run that is not its own is cause a
+	// SPURIOUS WAKE on that run's subject. That runner then goes to collect the
+	// approval and is refused, holding no capability for a task that was never
+	// its. Noise, not privilege — and a reader who reaches for the word "hole"
+	// here has mistaken which question this field answers.
+	RunId         *string `protobuf:"bytes,11,opt,name=run_id,json=runId,proto3,oneof" json:"run_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -516,6 +547,13 @@ func (x *CreateTaskRequest) GetRequester() string {
 	return ""
 }
 
+func (x *CreateTaskRequest) GetRunId() string {
+	if x != nil && x.RunId != nil {
+		return *x.RunId
+	}
+	return ""
+}
+
 type CreateTaskResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	TaskId        *string                `protobuf:"bytes,1,opt,name=task_id,json=taskId,proto3,oneof" json:"task_id,omitempty"`
@@ -560,6 +598,147 @@ func (x *CreateTaskResponse) GetTaskId() string {
 	return ""
 }
 
+// GetTaskGrantRequest names the task whose approval is being collected.
+//
+// A message of its own rather than `garm.card.v1.TaskRef`, which the four other
+// per-task methods share, and the reason is the gate rather than style. The
+// service has to decide that this caller IS the run that was parked on this
+// task, and the attested fact that would settle it does not exist yet: garmd
+// builds the invocation's attribution with a tenant and a correlation id and
+// never a run id, so `run_id` reaches a tool service empty however the runner
+// fills it in. The answer being designed is an opaque single-task capability
+// `create_task` returns and the runner presents here — possession rather than an
+// unattested assertion — and that is a FIELD on this message. On TaskRef it
+// would be a field on a message four unrelated methods take, where on three of
+// them it would mean nothing.
+//
+// It lands as field 2, and the cost is stated rather than hidden: a new field
+// moves the wire shape, so every catalogue carrying garm.tasks.v1 is rebuilt
+// once more. Declaring the field now to save that rebuild would mean guessing
+// the shape of a contract that is being decided, which is the more expensive
+// mistake of the two.
+type GetTaskGrantRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	TaskId        *string                `protobuf:"bytes,1,opt,name=task_id,json=taskId,proto3,oneof" json:"task_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetTaskGrantRequest) Reset() {
+	*x = GetTaskGrantRequest{}
+	mi := &file_garm_tasks_v1_tasks_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetTaskGrantRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetTaskGrantRequest) ProtoMessage() {}
+
+func (x *GetTaskGrantRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_garm_tasks_v1_tasks_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetTaskGrantRequest.ProtoReflect.Descriptor instead.
+func (*GetTaskGrantRequest) Descriptor() ([]byte, []int) {
+	return file_garm_tasks_v1_tasks_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *GetTaskGrantRequest) GetTaskId() string {
+	if x != nil && x.TaskId != nil {
+		return *x.TaskId
+	}
+	return ""
+}
+
+// TaskGrant is the approval, and the answer of one method and nothing else.
+//
+// The grant below is PUBLIC to the field-policy walk, and that is the one thing
+// in this message to read twice. A RESTRICTED read policy is the obvious move
+// and it would break the method: the deployment's runner holds
+// CLEARANCE_PUBLIC, so the daemon would omit the field and hand the waking run
+// an empty success — the no-grant failure this method exists to fix, arrived at
+// from the other direction. The credential is kept by a boundary instead: one
+// method, in one set, for one audience, after the service's own per-task check.
+// A rule that every reader of a shared message has to evaluate correctly is what
+// the ruling against putting this on `Task` rejected.
+type TaskGrant struct {
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	TaskId *string                `protobuf:"bytes,1,opt,name=task_id,json=taskId,proto3,oneof" json:"task_id,omitempty"`
+	// The approval, as the deciding person's own client minted it: single-use,
+	// bound to this task and these values, and fifteen minutes old at most. The
+	// runner presents it to the daemon as the grant for the call its run was
+	// parked on, and it reaches no log line and no ledger row by value.
+	Grant *string `protobuf:"bytes,2,opt,name=grant,proto3,oneof" json:"grant,omitempty"`
+	// The approval's identifier, so a runner can record WHICH approval it
+	// collected without recording the approval. `Task.grant_jti` is the same
+	// value, and is the only thing about a grant that projection carries.
+	GrantJti      *string `protobuf:"bytes,3,opt,name=grant_jti,json=grantJti,proto3,oneof" json:"grant_jti,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TaskGrant) Reset() {
+	*x = TaskGrant{}
+	mi := &file_garm_tasks_v1_tasks_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TaskGrant) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TaskGrant) ProtoMessage() {}
+
+func (x *TaskGrant) ProtoReflect() protoreflect.Message {
+	mi := &file_garm_tasks_v1_tasks_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TaskGrant.ProtoReflect.Descriptor instead.
+func (*TaskGrant) Descriptor() ([]byte, []int) {
+	return file_garm_tasks_v1_tasks_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *TaskGrant) GetTaskId() string {
+	if x != nil && x.TaskId != nil {
+		return *x.TaskId
+	}
+	return ""
+}
+
+func (x *TaskGrant) GetGrant() string {
+	if x != nil && x.Grant != nil {
+		return *x.Grant
+	}
+	return ""
+}
+
+func (x *TaskGrant) GetGrantJti() string {
+	if x != nil && x.GrantJti != nil {
+		return *x.GrantJti
+	}
+	return ""
+}
+
 type ListTasksRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	View          *ListTasksRequest_View `protobuf:"varint,1,opt,name=view,proto3,enum=garm.tasks.v1.ListTasksRequest_View,oneof" json:"view,omitempty"`
@@ -571,7 +750,7 @@ type ListTasksRequest struct {
 
 func (x *ListTasksRequest) Reset() {
 	*x = ListTasksRequest{}
-	mi := &file_garm_tasks_v1_tasks_proto_msgTypes[3]
+	mi := &file_garm_tasks_v1_tasks_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -583,7 +762,7 @@ func (x *ListTasksRequest) String() string {
 func (*ListTasksRequest) ProtoMessage() {}
 
 func (x *ListTasksRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_garm_tasks_v1_tasks_proto_msgTypes[3]
+	mi := &file_garm_tasks_v1_tasks_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -596,7 +775,7 @@ func (x *ListTasksRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListTasksRequest.ProtoReflect.Descriptor instead.
 func (*ListTasksRequest) Descriptor() ([]byte, []int) {
-	return file_garm_tasks_v1_tasks_proto_rawDescGZIP(), []int{3}
+	return file_garm_tasks_v1_tasks_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *ListTasksRequest) GetView() ListTasksRequest_View {
@@ -634,7 +813,7 @@ type ListTasksResponse struct {
 
 func (x *ListTasksResponse) Reset() {
 	*x = ListTasksResponse{}
-	mi := &file_garm_tasks_v1_tasks_proto_msgTypes[4]
+	mi := &file_garm_tasks_v1_tasks_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -646,7 +825,7 @@ func (x *ListTasksResponse) String() string {
 func (*ListTasksResponse) ProtoMessage() {}
 
 func (x *ListTasksResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_garm_tasks_v1_tasks_proto_msgTypes[4]
+	mi := &file_garm_tasks_v1_tasks_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -659,7 +838,7 @@ func (x *ListTasksResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListTasksResponse.ProtoReflect.Descriptor instead.
 func (*ListTasksResponse) Descriptor() ([]byte, []int) {
-	return file_garm_tasks_v1_tasks_proto_rawDescGZIP(), []int{4}
+	return file_garm_tasks_v1_tasks_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *ListTasksResponse) GetCards() []*v11.Card {
@@ -710,7 +889,7 @@ type Task struct {
 
 func (x *Task) Reset() {
 	*x = Task{}
-	mi := &file_garm_tasks_v1_tasks_proto_msgTypes[5]
+	mi := &file_garm_tasks_v1_tasks_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -722,7 +901,7 @@ func (x *Task) String() string {
 func (*Task) ProtoMessage() {}
 
 func (x *Task) ProtoReflect() protoreflect.Message {
-	mi := &file_garm_tasks_v1_tasks_proto_msgTypes[5]
+	mi := &file_garm_tasks_v1_tasks_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -735,7 +914,7 @@ func (x *Task) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Task.ProtoReflect.Descriptor instead.
 func (*Task) Descriptor() ([]byte, []int) {
-	return file_garm_tasks_v1_tasks_proto_rawDescGZIP(), []int{5}
+	return file_garm_tasks_v1_tasks_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *Task) GetTaskId() string {
@@ -903,7 +1082,7 @@ type DecideTaskRequest struct {
 
 func (x *DecideTaskRequest) Reset() {
 	*x = DecideTaskRequest{}
-	mi := &file_garm_tasks_v1_tasks_proto_msgTypes[6]
+	mi := &file_garm_tasks_v1_tasks_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -915,7 +1094,7 @@ func (x *DecideTaskRequest) String() string {
 func (*DecideTaskRequest) ProtoMessage() {}
 
 func (x *DecideTaskRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_garm_tasks_v1_tasks_proto_msgTypes[6]
+	mi := &file_garm_tasks_v1_tasks_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -928,7 +1107,7 @@ func (x *DecideTaskRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DecideTaskRequest.ProtoReflect.Descriptor instead.
 func (*DecideTaskRequest) Descriptor() ([]byte, []int) {
-	return file_garm_tasks_v1_tasks_proto_rawDescGZIP(), []int{6}
+	return file_garm_tasks_v1_tasks_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *DecideTaskRequest) GetTaskId() string {
@@ -984,7 +1163,7 @@ type TriageTaskRequest struct {
 
 func (x *TriageTaskRequest) Reset() {
 	*x = TriageTaskRequest{}
-	mi := &file_garm_tasks_v1_tasks_proto_msgTypes[7]
+	mi := &file_garm_tasks_v1_tasks_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -996,7 +1175,7 @@ func (x *TriageTaskRequest) String() string {
 func (*TriageTaskRequest) ProtoMessage() {}
 
 func (x *TriageTaskRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_garm_tasks_v1_tasks_proto_msgTypes[7]
+	mi := &file_garm_tasks_v1_tasks_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1009,7 +1188,7 @@ func (x *TriageTaskRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TriageTaskRequest.ProtoReflect.Descriptor instead.
 func (*TriageTaskRequest) Descriptor() ([]byte, []int) {
-	return file_garm_tasks_v1_tasks_proto_rawDescGZIP(), []int{7}
+	return file_garm_tasks_v1_tasks_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *TriageTaskRequest) GetTaskId() string {
@@ -1060,7 +1239,7 @@ type Triage struct {
 
 func (x *Triage) Reset() {
 	*x = Triage{}
-	mi := &file_garm_tasks_v1_tasks_proto_msgTypes[8]
+	mi := &file_garm_tasks_v1_tasks_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1072,7 +1251,7 @@ func (x *Triage) String() string {
 func (*Triage) ProtoMessage() {}
 
 func (x *Triage) ProtoReflect() protoreflect.Message {
-	mi := &file_garm_tasks_v1_tasks_proto_msgTypes[8]
+	mi := &file_garm_tasks_v1_tasks_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1085,7 +1264,7 @@ func (x *Triage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Triage.ProtoReflect.Descriptor instead.
 func (*Triage) Descriptor() ([]byte, []int) {
-	return file_garm_tasks_v1_tasks_proto_rawDescGZIP(), []int{8}
+	return file_garm_tasks_v1_tasks_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *Triage) GetActor() string {
@@ -1136,7 +1315,7 @@ type Event struct {
 
 func (x *Event) Reset() {
 	*x = Event{}
-	mi := &file_garm_tasks_v1_tasks_proto_msgTypes[9]
+	mi := &file_garm_tasks_v1_tasks_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1148,7 +1327,7 @@ func (x *Event) String() string {
 func (*Event) ProtoMessage() {}
 
 func (x *Event) ProtoReflect() protoreflect.Message {
-	mi := &file_garm_tasks_v1_tasks_proto_msgTypes[9]
+	mi := &file_garm_tasks_v1_tasks_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1161,7 +1340,7 @@ func (x *Event) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Event.ProtoReflect.Descriptor instead.
 func (*Event) Descriptor() ([]byte, []int) {
-	return file_garm_tasks_v1_tasks_proto_rawDescGZIP(), []int{9}
+	return file_garm_tasks_v1_tasks_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *Event) GetSeq() uint32 {
@@ -1210,7 +1389,7 @@ const file_garm_tasks_v1_tasks_proto_rawDesc = "" +
 	"\x9a\xb5\x18\x06\b\n" +
 	"\"\x02\n" +
 	"\x00B\x10\n" +
-	"\x0e_min_clearance\"\xd7\x05\n" +
+	"\x0e_min_clearance\"\x88\x06\n" +
 	"\x11CreateTaskRequest\x126\n" +
 	"\x04kind\x18\x01 \x01(\x0e2\x13.garm.tasks.v1.KindB\b\xbaH\x05\x82\x01\x02\x10\x01H\x00R\x04kind\x88\x01\x01\x12!\n" +
 	"\x04tool\x18\x02 \x01(\tB\b\xbaH\x05r\x03\x18\xc8\x01H\x01R\x04tool\x88\x01\x01\x12'\n" +
@@ -1222,7 +1401,8 @@ const file_garm_tasks_v1_tasks_proto_rawDesc = "" +
 	"\bquestion\x18\b \x01(\tB\b\xbaH\x05r\x03\x18\xd0\x0fH\x05R\bquestion\x88\x01\x01\x12.\n" +
 	"\x10catalogue_digest\x18\t \x01(\tH\x06R\x0fcatalogueDigest\x88\x01\x01\x12+\n" +
 	"\trequester\x18\n" +
-	" \x01(\tB\b\xbaH\x05r\x03\x18\xc8\x01H\aR\trequester\x88\x01\x01\x1a;\n" +
+	" \x01(\tB\b\xbaH\x05r\x03\x18\xc8\x01H\aR\trequester\x88\x01\x01\x12$\n" +
+	"\x06run_id\x18\v \x01(\tB\b\xbaH\x05r\x03\x18\xc8\x01H\bR\x05runId\x88\x01\x01\x1a;\n" +
 	"\rMaterialEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01:\n" +
@@ -1238,14 +1418,34 @@ const file_garm_tasks_v1_tasks_proto_rawDesc = "" +
 	"\t_questionB\x13\n" +
 	"\x11_catalogue_digestB\f\n" +
 	"\n" +
-	"_requester\"J\n" +
+	"_requesterB\t\n" +
+	"\a_run_id\"J\n" +
 	"\x12CreateTaskResponse\x12\x1c\n" +
 	"\atask_id\x18\x01 \x01(\tH\x00R\x06taskId\x88\x01\x01:\n" +
 	"\x9a\xb5\x18\x06\b\n" +
 	"\"\x02\n" +
 	"\x00B\n" +
 	"\n" +
-	"\b_task_id\"\x84\x02\n" +
+	"\b_task_id\"S\n" +
+	"\x13GetTaskGrantRequest\x12$\n" +
+	"\atask_id\x18\x01 \x01(\tB\x06\xbaH\x03\xc8\x01\x01H\x00R\x06taskId\x88\x01\x01:\n" +
+	"\x9a\xb5\x18\x06\b\n" +
+	"\"\x02\n" +
+	"\x00B\n" +
+	"\n" +
+	"\b_task_id\"\x96\x01\n" +
+	"\tTaskGrant\x12\x1c\n" +
+	"\atask_id\x18\x01 \x01(\tH\x00R\x06taskId\x88\x01\x01\x12\x19\n" +
+	"\x05grant\x18\x02 \x01(\tH\x01R\x05grant\x88\x01\x01\x12 \n" +
+	"\tgrant_jti\x18\x03 \x01(\tH\x02R\bgrantJti\x88\x01\x01:\n" +
+	"\x9a\xb5\x18\x06\b\n" +
+	"\"\x02\n" +
+	"\x00B\n" +
+	"\n" +
+	"\b_task_idB\b\n" +
+	"\x06_grantB\f\n" +
+	"\n" +
+	"_grant_jti\"\x84\x02\n" +
 	"\x10ListTasksRequest\x12=\n" +
 	"\x04view\x18\x01 \x01(\x0e2$.garm.tasks.v1.ListTasksRequest.ViewH\x00R\x04view\x88\x01\x01\x12\x1b\n" +
 	"\x06cursor\x18\x02 \x01(\tH\x01R\x06cursor\x88\x01\x01\x12)\n" +
@@ -1399,13 +1599,17 @@ const file_garm_tasks_v1_tasks_proto_rawDesc = "" +
 	"\aAPPROVE\x10\x01\x12\v\n" +
 	"\aDECLINE\x10\x02\x12\n" +
 	"\n" +
-	"\x06ANSWER\x10\x032\xfd\f\n" +
+	"\x06ANSWER\x10\x032\xee\x0e\n" +
 	"\fTasksService\x12\xd0\x01\n" +
 	"\n" +
 	"CreateTask\x12 .garm.tasks.v1.CreateTaskRequest\x1a!.garm.tasks.v1.CreateTaskResponse\"}\x92\xb5\x18y\n" +
 	"\vcreate_task\x12\vOpen a task\x1a@Open an approval or a question for a person, on behalf of a run. \x02(\n" +
 	"B\x04\b\x01\x10\x03J\x02\b\x01b\n" +
-	"escalationr\x01\x03\x12\xe1\x01\n" +
+	"escalationr\x01\x03\x12\xee\x01\n" +
+	"\fGetTaskGrant\x12\".garm.tasks.v1.GetTaskGrantRequest\x1a\x18.garm.tasks.v1.TaskGrant\"\x9f\x01\x92\xb5\x18\x9a\x01\n" +
+	"\x0eget_task_grant\x12\x19Collect a task's approval\x1aGThe approval a decided task minted, for the run that was waiting on it. \x01(\n" +
+	"B\x04\b\x01\x10\x01J\x02\b\x01b\n" +
+	"escalationj\a\b\x02 \xfb\x13(\x01r\x01\x03\x12\xe1\x01\n" +
 	"\tListTasks\x12\x1f.garm.tasks.v1.ListTasksRequest\x1a .garm.tasks.v1.ListTasksResponse\"\x90\x01\x92\xb5\x18\x8b\x01\n" +
 	"\n" +
 	"list_tasks\x12\n" +
@@ -1454,7 +1658,7 @@ func file_garm_tasks_v1_tasks_proto_rawDescGZIP() []byte {
 }
 
 var file_garm_tasks_v1_tasks_proto_enumTypes = make([]protoimpl.EnumInfo, 5)
-var file_garm_tasks_v1_tasks_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
+var file_garm_tasks_v1_tasks_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
 var file_garm_tasks_v1_tasks_proto_goTypes = []any{
 	(Kind)(0),                     // 0: garm.tasks.v1.Kind
 	(State)(0),                    // 1: garm.tasks.v1.State
@@ -1464,65 +1668,69 @@ var file_garm_tasks_v1_tasks_proto_goTypes = []any{
 	(*Predicate)(nil),             // 5: garm.tasks.v1.Predicate
 	(*CreateTaskRequest)(nil),     // 6: garm.tasks.v1.CreateTaskRequest
 	(*CreateTaskResponse)(nil),    // 7: garm.tasks.v1.CreateTaskResponse
-	(*ListTasksRequest)(nil),      // 8: garm.tasks.v1.ListTasksRequest
-	(*ListTasksResponse)(nil),     // 9: garm.tasks.v1.ListTasksResponse
-	(*Task)(nil),                  // 10: garm.tasks.v1.Task
-	(*DecideTaskRequest)(nil),     // 11: garm.tasks.v1.DecideTaskRequest
-	(*TriageTaskRequest)(nil),     // 12: garm.tasks.v1.TriageTaskRequest
-	(*Triage)(nil),                // 13: garm.tasks.v1.Triage
-	(*Event)(nil),                 // 14: garm.tasks.v1.Event
-	nil,                           // 15: garm.tasks.v1.CreateTaskRequest.MaterialEntry
-	(v1.Clearance)(0),             // 16: garm.tool.v1.Clearance
-	(*v11.Card)(nil),              // 17: garm.card.v1.Card
-	(*timestamppb.Timestamp)(nil), // 18: google.protobuf.Timestamp
-	(*anypb.Any)(nil),             // 19: google.protobuf.Any
-	(*v11.TaskRef)(nil),           // 20: garm.card.v1.TaskRef
+	(*GetTaskGrantRequest)(nil),   // 8: garm.tasks.v1.GetTaskGrantRequest
+	(*TaskGrant)(nil),             // 9: garm.tasks.v1.TaskGrant
+	(*ListTasksRequest)(nil),      // 10: garm.tasks.v1.ListTasksRequest
+	(*ListTasksResponse)(nil),     // 11: garm.tasks.v1.ListTasksResponse
+	(*Task)(nil),                  // 12: garm.tasks.v1.Task
+	(*DecideTaskRequest)(nil),     // 13: garm.tasks.v1.DecideTaskRequest
+	(*TriageTaskRequest)(nil),     // 14: garm.tasks.v1.TriageTaskRequest
+	(*Triage)(nil),                // 15: garm.tasks.v1.Triage
+	(*Event)(nil),                 // 16: garm.tasks.v1.Event
+	nil,                           // 17: garm.tasks.v1.CreateTaskRequest.MaterialEntry
+	(v1.Clearance)(0),             // 18: garm.tool.v1.Clearance
+	(*v11.Card)(nil),              // 19: garm.card.v1.Card
+	(*timestamppb.Timestamp)(nil), // 20: google.protobuf.Timestamp
+	(*anypb.Any)(nil),             // 21: google.protobuf.Any
+	(*v11.TaskRef)(nil),           // 22: garm.card.v1.TaskRef
 }
 var file_garm_tasks_v1_tasks_proto_depIdxs = []int32{
-	16, // 0: garm.tasks.v1.Predicate.min_clearance:type_name -> garm.tool.v1.Clearance
+	18, // 0: garm.tasks.v1.Predicate.min_clearance:type_name -> garm.tool.v1.Clearance
 	0,  // 1: garm.tasks.v1.CreateTaskRequest.kind:type_name -> garm.tasks.v1.Kind
-	15, // 2: garm.tasks.v1.CreateTaskRequest.material:type_name -> garm.tasks.v1.CreateTaskRequest.MaterialEntry
+	17, // 2: garm.tasks.v1.CreateTaskRequest.material:type_name -> garm.tasks.v1.CreateTaskRequest.MaterialEntry
 	5,  // 3: garm.tasks.v1.CreateTaskRequest.predicate:type_name -> garm.tasks.v1.Predicate
 	3,  // 4: garm.tasks.v1.ListTasksRequest.view:type_name -> garm.tasks.v1.ListTasksRequest.View
-	17, // 5: garm.tasks.v1.ListTasksResponse.cards:type_name -> garm.card.v1.Card
+	19, // 5: garm.tasks.v1.ListTasksResponse.cards:type_name -> garm.card.v1.Card
 	0,  // 6: garm.tasks.v1.Task.kind:type_name -> garm.tasks.v1.Kind
 	1,  // 7: garm.tasks.v1.Task.state:type_name -> garm.tasks.v1.State
 	5,  // 8: garm.tasks.v1.Task.predicate:type_name -> garm.tasks.v1.Predicate
 	2,  // 9: garm.tasks.v1.Task.decision:type_name -> garm.tasks.v1.Decision
-	18, // 10: garm.tasks.v1.Task.created_at:type_name -> google.protobuf.Timestamp
-	18, // 11: garm.tasks.v1.Task.expires_at:type_name -> google.protobuf.Timestamp
-	18, // 12: garm.tasks.v1.Task.decided_at:type_name -> google.protobuf.Timestamp
-	14, // 13: garm.tasks.v1.Task.events:type_name -> garm.tasks.v1.Event
-	13, // 14: garm.tasks.v1.Task.triage:type_name -> garm.tasks.v1.Triage
-	17, // 15: garm.tasks.v1.Task.card:type_name -> garm.card.v1.Card
-	19, // 16: garm.tasks.v1.Task.answer:type_name -> google.protobuf.Any
+	20, // 10: garm.tasks.v1.Task.created_at:type_name -> google.protobuf.Timestamp
+	20, // 11: garm.tasks.v1.Task.expires_at:type_name -> google.protobuf.Timestamp
+	20, // 12: garm.tasks.v1.Task.decided_at:type_name -> google.protobuf.Timestamp
+	16, // 13: garm.tasks.v1.Task.events:type_name -> garm.tasks.v1.Event
+	15, // 14: garm.tasks.v1.Task.triage:type_name -> garm.tasks.v1.Triage
+	19, // 15: garm.tasks.v1.Task.card:type_name -> garm.card.v1.Card
+	21, // 16: garm.tasks.v1.Task.answer:type_name -> google.protobuf.Any
 	2,  // 17: garm.tasks.v1.DecideTaskRequest.decision:type_name -> garm.tasks.v1.Decision
-	19, // 18: garm.tasks.v1.DecideTaskRequest.answer:type_name -> google.protobuf.Any
+	21, // 18: garm.tasks.v1.DecideTaskRequest.answer:type_name -> google.protobuf.Any
 	4,  // 19: garm.tasks.v1.TriageTaskRequest.action:type_name -> garm.tasks.v1.TriageTaskRequest.Action
 	2,  // 20: garm.tasks.v1.TriageTaskRequest.recommendation:type_name -> garm.tasks.v1.Decision
 	5,  // 21: garm.tasks.v1.TriageTaskRequest.reassign_to:type_name -> garm.tasks.v1.Predicate
 	4,  // 22: garm.tasks.v1.Triage.action:type_name -> garm.tasks.v1.TriageTaskRequest.Action
 	2,  // 23: garm.tasks.v1.Triage.recommendation:type_name -> garm.tasks.v1.Decision
-	18, // 24: garm.tasks.v1.Triage.at:type_name -> google.protobuf.Timestamp
-	18, // 25: garm.tasks.v1.Event.at:type_name -> google.protobuf.Timestamp
+	20, // 24: garm.tasks.v1.Triage.at:type_name -> google.protobuf.Timestamp
+	20, // 25: garm.tasks.v1.Event.at:type_name -> google.protobuf.Timestamp
 	6,  // 26: garm.tasks.v1.TasksService.CreateTask:input_type -> garm.tasks.v1.CreateTaskRequest
-	8,  // 27: garm.tasks.v1.TasksService.ListTasks:input_type -> garm.tasks.v1.ListTasksRequest
-	20, // 28: garm.tasks.v1.TasksService.GetTask:input_type -> garm.card.v1.TaskRef
-	20, // 29: garm.tasks.v1.TasksService.ApprovalCard:input_type -> garm.card.v1.TaskRef
-	20, // 30: garm.tasks.v1.TasksService.ClaimTask:input_type -> garm.card.v1.TaskRef
-	20, // 31: garm.tasks.v1.TasksService.ReleaseTask:input_type -> garm.card.v1.TaskRef
-	11, // 32: garm.tasks.v1.TasksService.DecideTask:input_type -> garm.tasks.v1.DecideTaskRequest
-	12, // 33: garm.tasks.v1.TasksService.TriageTask:input_type -> garm.tasks.v1.TriageTaskRequest
-	7,  // 34: garm.tasks.v1.TasksService.CreateTask:output_type -> garm.tasks.v1.CreateTaskResponse
-	9,  // 35: garm.tasks.v1.TasksService.ListTasks:output_type -> garm.tasks.v1.ListTasksResponse
-	10, // 36: garm.tasks.v1.TasksService.GetTask:output_type -> garm.tasks.v1.Task
-	17, // 37: garm.tasks.v1.TasksService.ApprovalCard:output_type -> garm.card.v1.Card
-	10, // 38: garm.tasks.v1.TasksService.ClaimTask:output_type -> garm.tasks.v1.Task
-	10, // 39: garm.tasks.v1.TasksService.ReleaseTask:output_type -> garm.tasks.v1.Task
-	10, // 40: garm.tasks.v1.TasksService.DecideTask:output_type -> garm.tasks.v1.Task
-	10, // 41: garm.tasks.v1.TasksService.TriageTask:output_type -> garm.tasks.v1.Task
-	34, // [34:42] is the sub-list for method output_type
-	26, // [26:34] is the sub-list for method input_type
+	8,  // 27: garm.tasks.v1.TasksService.GetTaskGrant:input_type -> garm.tasks.v1.GetTaskGrantRequest
+	10, // 28: garm.tasks.v1.TasksService.ListTasks:input_type -> garm.tasks.v1.ListTasksRequest
+	22, // 29: garm.tasks.v1.TasksService.GetTask:input_type -> garm.card.v1.TaskRef
+	22, // 30: garm.tasks.v1.TasksService.ApprovalCard:input_type -> garm.card.v1.TaskRef
+	22, // 31: garm.tasks.v1.TasksService.ClaimTask:input_type -> garm.card.v1.TaskRef
+	22, // 32: garm.tasks.v1.TasksService.ReleaseTask:input_type -> garm.card.v1.TaskRef
+	13, // 33: garm.tasks.v1.TasksService.DecideTask:input_type -> garm.tasks.v1.DecideTaskRequest
+	14, // 34: garm.tasks.v1.TasksService.TriageTask:input_type -> garm.tasks.v1.TriageTaskRequest
+	7,  // 35: garm.tasks.v1.TasksService.CreateTask:output_type -> garm.tasks.v1.CreateTaskResponse
+	9,  // 36: garm.tasks.v1.TasksService.GetTaskGrant:output_type -> garm.tasks.v1.TaskGrant
+	11, // 37: garm.tasks.v1.TasksService.ListTasks:output_type -> garm.tasks.v1.ListTasksResponse
+	12, // 38: garm.tasks.v1.TasksService.GetTask:output_type -> garm.tasks.v1.Task
+	19, // 39: garm.tasks.v1.TasksService.ApprovalCard:output_type -> garm.card.v1.Card
+	12, // 40: garm.tasks.v1.TasksService.ClaimTask:output_type -> garm.tasks.v1.Task
+	12, // 41: garm.tasks.v1.TasksService.ReleaseTask:output_type -> garm.tasks.v1.Task
+	12, // 42: garm.tasks.v1.TasksService.DecideTask:output_type -> garm.tasks.v1.Task
+	12, // 43: garm.tasks.v1.TasksService.TriageTask:output_type -> garm.tasks.v1.Task
+	35, // [35:44] is the sub-list for method output_type
+	26, // [26:35] is the sub-list for method input_type
 	26, // [26:26] is the sub-list for extension type_name
 	26, // [26:26] is the sub-list for extension extendee
 	0,  // [0:26] is the sub-list for field type_name
@@ -1543,13 +1751,15 @@ func file_garm_tasks_v1_tasks_proto_init() {
 	file_garm_tasks_v1_tasks_proto_msgTypes[7].OneofWrappers = []any{}
 	file_garm_tasks_v1_tasks_proto_msgTypes[8].OneofWrappers = []any{}
 	file_garm_tasks_v1_tasks_proto_msgTypes[9].OneofWrappers = []any{}
+	file_garm_tasks_v1_tasks_proto_msgTypes[10].OneofWrappers = []any{}
+	file_garm_tasks_v1_tasks_proto_msgTypes[11].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_garm_tasks_v1_tasks_proto_rawDesc), len(file_garm_tasks_v1_tasks_proto_rawDesc)),
 			NumEnums:      5,
-			NumMessages:   11,
+			NumMessages:   13,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
