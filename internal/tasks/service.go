@@ -71,9 +71,14 @@ func (s *Service) claimTTL() time.Duration {
 // CreateInput is what a runner asks for when a call it is about to make
 // needs a person.
 type CreateInput struct {
-	Kind            store.Kind
-	Tool            string
-	Subject         string
+	Kind store.Kind
+	Tool string
+	// Subject is the GRANT's subject -- the resource the decision is about.
+	Subject string
+	// Requester is the person the task is opened FOR, and the one person
+	// four-eyes excludes from deciding it. It comes from the request because
+	// the CALLER is a runner acting for that person, not the person.
+	Requester       string
 	Material        map[string]string
 	Predicate       store.Predicate
 	ExpiresIn       time.Duration
@@ -95,9 +100,13 @@ type CreateInput struct {
 // retries after a timeout it never saw the answer to gets the task it
 // already opened, not a second one in somebody's queue.
 func (s *Service) Create(ctx context.Context, c Caller, in CreateInput) (store.Task, error) {
-	if c.Kind != toolv1.PrincipalKind_PRINCIPAL_KIND_USER {
+	if c.Kind != toolv1.PrincipalKind_PRINCIPAL_KIND_SERVICE {
 		return store.Task{}, refuse(CodeDenied,
-			"a task is opened for a person: the call's principal is not a user")
+			"a task is opened by a runner acting for a person: the call's principal is not a service")
+	}
+	if in.Requester == "" {
+		return store.Task{}, refuse(CodeRefused,
+			"the call names no requester, so there is nobody to exclude from deciding")
 	}
 	if !c.HasAgent() {
 		return store.Task{}, refuse(CodeDenied,
@@ -134,7 +143,7 @@ func (s *Service) Create(ctx context.Context, c Caller, in CreateInput) (store.T
 	now := s.now()
 	t := store.Task{
 		ID: s.newID(), Tenant: c.Tenant, Kind: kind, RunID: c.RunID,
-		Requester: c.Subject, Agent: c.Agent(), ToolFQN: in.Tool, Subject: in.Subject,
+		Requester: in.Requester, Agent: c.Agent(), ToolFQN: in.Tool, Subject: in.Subject,
 		Material: in.Material, MaterialDigest: grant.Digest(in.Material),
 		Predicate: in.Predicate, State: store.StateOpen,
 		DecisionType: in.DecisionType, Question: in.Question,

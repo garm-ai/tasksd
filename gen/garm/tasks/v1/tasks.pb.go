@@ -396,8 +396,24 @@ type CreateTaskRequest struct {
 	DecisionType     *string                `protobuf:"bytes,7,opt,name=decision_type,json=decisionType,proto3,oneof" json:"decision_type,omitempty"` // FQN of the decision message in the pinned generation
 	Question         *string                `protobuf:"bytes,8,opt,name=question,proto3,oneof" json:"question,omitempty"`                             // ASK only, plain text
 	CatalogueDigest  *string                `protobuf:"bytes,9,opt,name=catalogue_digest,json=catalogueDigest,proto3,oneof" json:"catalogue_digest,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// The person this task is opened FOR, and the one person the four-eyes rule
+	// excludes from deciding it. Distinct from `subject` above, which is the
+	// GRANT's subject -- the resource the decision is about, like an account.
+	//
+	// It is a field rather than the caller's identity because a task is opened by
+	// a RUNNER acting as an agent, which is a service principal, on behalf of
+	// whoever started the run. Deriving the requester from the caller conflated
+	// two different claims -- "a task must name a requester" and "the caller must
+	// be that person" -- and a runner satisfies the first without satisfying the
+	// second. That conflation is why a service principal could not open a task at
+	// all.
+	//
+	// Set by the RUNNER from the run's own principal. A model never sets it, and
+	// a tool service must not treat it as a way to open a task against an
+	// arbitrary subject.
+	Requester     *string `protobuf:"bytes,10,opt,name=requester,proto3,oneof" json:"requester,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *CreateTaskRequest) Reset() {
@@ -489,6 +505,13 @@ func (x *CreateTaskRequest) GetQuestion() string {
 func (x *CreateTaskRequest) GetCatalogueDigest() string {
 	if x != nil && x.CatalogueDigest != nil {
 		return *x.CatalogueDigest
+	}
+	return ""
+}
+
+func (x *CreateTaskRequest) GetRequester() string {
+	if x != nil && x.Requester != nil {
+		return *x.Requester
 	}
 	return ""
 }
@@ -1187,7 +1210,7 @@ const file_garm_tasks_v1_tasks_proto_rawDesc = "" +
 	"\x9a\xb5\x18\x06\b\n" +
 	"\"\x02\n" +
 	"\x00B\x10\n" +
-	"\x0e_min_clearance\"\x9c\x05\n" +
+	"\x0e_min_clearance\"\xd7\x05\n" +
 	"\x11CreateTaskRequest\x126\n" +
 	"\x04kind\x18\x01 \x01(\x0e2\x13.garm.tasks.v1.KindB\b\xbaH\x05\x82\x01\x02\x10\x01H\x00R\x04kind\x88\x01\x01\x12!\n" +
 	"\x04tool\x18\x02 \x01(\tB\b\xbaH\x05r\x03\x18\xc8\x01H\x01R\x04tool\x88\x01\x01\x12'\n" +
@@ -1197,7 +1220,9 @@ const file_garm_tasks_v1_tasks_proto_rawDesc = "" +
 	"\x12expires_in_seconds\x18\x06 \x01(\rB\v\xbaH\b*\x06\x18\x80\xf5$ \x00H\x03R\x10expiresInSeconds\x88\x01\x01\x122\n" +
 	"\rdecision_type\x18\a \x01(\tB\b\xbaH\x05r\x03\x18\xc8\x01H\x04R\fdecisionType\x88\x01\x01\x12)\n" +
 	"\bquestion\x18\b \x01(\tB\b\xbaH\x05r\x03\x18\xd0\x0fH\x05R\bquestion\x88\x01\x01\x12.\n" +
-	"\x10catalogue_digest\x18\t \x01(\tH\x06R\x0fcatalogueDigest\x88\x01\x01\x1a;\n" +
+	"\x10catalogue_digest\x18\t \x01(\tH\x06R\x0fcatalogueDigest\x88\x01\x01\x12+\n" +
+	"\trequester\x18\n" +
+	" \x01(\tB\b\xbaH\x05r\x03\x18\xc8\x01H\aR\trequester\x88\x01\x01\x1a;\n" +
 	"\rMaterialEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01:\n" +
@@ -1211,7 +1236,9 @@ const file_garm_tasks_v1_tasks_proto_rawDesc = "" +
 	"\x13_expires_in_secondsB\x10\n" +
 	"\x0e_decision_typeB\v\n" +
 	"\t_questionB\x13\n" +
-	"\x11_catalogue_digest\"J\n" +
+	"\x11_catalogue_digestB\f\n" +
+	"\n" +
+	"_requester\"J\n" +
 	"\x12CreateTaskResponse\x12\x1c\n" +
 	"\atask_id\x18\x01 \x01(\tH\x00R\x06taskId\x88\x01\x01:\n" +
 	"\x9a\xb5\x18\x06\b\n" +

@@ -291,6 +291,23 @@ message CreateTaskRequest {
   optional string decision_type = 7 [(buf.validate.field).string.max_len = 200];  // FQN of the decision message in the pinned generation
   optional string question = 8 [(buf.validate.field).string.max_len = 2000];      // ASK only, plain text
   optional string catalogue_digest = 9;
+
+  // The person this task is opened FOR, and the one person the four-eyes rule
+  // excludes from deciding it. Distinct from `subject` above, which is the
+  // GRANT's subject -- the resource the decision is about, like an account.
+  //
+  // It is a field rather than the caller's identity because a task is opened by
+  // a RUNNER acting as an agent, which is a service principal, on behalf of
+  // whoever started the run. Deriving the requester from the caller conflated
+  // two different claims -- "a task must name a requester" and "the caller must
+  // be that person" -- and a runner satisfies the first without satisfying the
+  // second. That conflation is why a service principal could not open a task at
+  // all.
+  //
+  // Set by the RUNNER from the run's own principal. A model never sets it, and
+  // a tool service must not treat it as a way to open a task against an
+  // arbitrary subject.
+  optional string requester = 10 [(buf.validate.field).string.max_len = 200];
 }
 
 message CreateTaskResponse {

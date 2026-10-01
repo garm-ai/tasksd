@@ -56,16 +56,24 @@ func TestTheContractDeclaresEightToolsOnTheirOwnRoutes(t *testing.T) {
 // the two are one number agreed between two repositories, and the only thing
 // that can keep them agreeing is writing it down on both sides.
 //
-// This value is the one `github.com/garm-ai/contracts` v0.5.0 produced, before
-// the proto moved here. It did not move with the proto, because `go_package`
-// is an option and DescriptorHash reads no option; that is what lets the
-// package exist in two modules during the switchover without quarantining a
-// deployment. See KNOWN-GAPS.md.
+// It held `contracts` v0.5.0's value through the move of proto/ into this
+// repository, because `go_package` is an option and DescriptorHash reads no
+// option -- which is what lets the package exist in two modules during the
+// switchover without quarantining a deployment. See KNOWN-GAPS.md.
 //
-// If a change to the proto moves it, that is a real answer and not a broken
-// test: update this constant, and expect every catalogue that carries
+// IT MOVED ON 2026-10-01, and this is the real answer the comment below
+// anticipated rather than a broken test: `CreateTaskRequest` gained
+// `requester` (field 10), so the input descriptor of create_task has one more
+// field and the hash follows. Every catalogue that carries garm.tasks.v1 has
+// to be rebuilt, and `github.com/garm-ai/contracts` carries the IDENTICAL
+// field at the identical number so both copies still hash the same -- which is
+// the only thing keeping a deployment out of quarantine while two modules hold
+// this package.
+//
+// If a change to the proto moves it again, that is a real answer and not a
+// broken test: update this constant, and expect every catalogue that carries
 // garm.tasks.v1 to be rebuilt.
-const wireShape = "3a9113cd588ab3d2474ffdaaefb95bae7760dfbdcf72dcc88528b57b5101ff69"
+const wireShape = "6d981dae473be75988ff835b570a1df11f36704ac7bbbbaa7acd821ed9b83e50"
 
 // The wire shape is what a daemon compares with the catalogue before it
 // routes anything here. It has to be the agreed value, and it has to be
