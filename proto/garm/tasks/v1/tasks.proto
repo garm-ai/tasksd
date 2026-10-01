@@ -58,13 +58,43 @@ import "google/protobuf/timestamp.proto";
 // quarantine. KNOWN-GAPS.md carries the rest of that reasoning.
 option go_package = "github.com/garm-ai/tasksd/gen/garm/tasks/v1;tasksv1";
 
-// One set, not three. An earlier revision of the design kept `runner` and
-// `studio` sets here to keep a model away from create_task and decide_task;
-// audience does that now, per tool, and a set goes back to what a set is for:
-// grouping tools by domain and deciding who holds them. `triage` is a real
-// set — an agent's manifest lists it or does not.
+// Two sets, and neither of them is an audience. An earlier revision of the
+// design kept `runner` and `studio` sets here to keep a model away from
+// create_task and decide_task; audience does that now, per tool, and a set goes
+// back to what a set is for: grouping tools by domain and deciding who holds
+// them. `triage` is a real set — an agent's manifest lists it or does not —
+// and so is `escalation`.
+//
+// `escalation` is named for the act, not for the caller. Calling it `runner`
+// would put the rejected revision straight back: a set named after who holds it
+// stops being a grouping of tools and becomes a second, weaker audience. `ask`
+// was rejected too, because `ask` is already a Kind below and this set covers an
+// APPROVAL just as much as a question; `approvals` would read as the power to
+// decide one, which is the single thing holding this set must never confer.
+//
+// It exists because create_task named NO set, and a tool in no set is reachable
+// only by a caller in no set — garmd's `inScope` refuses a scoped caller every
+// tool that shares none of its sets. So a deployment had two ways to let the
+// runner's service principal open a task and both were wrong. Grant it `triage`
+// and create_task stays unreachable, which is the trap decide_task's comment
+// below records, met a second time from the other end. Leave it unscoped and the
+// platform's one runner reaches every CLEARANCE_PUBLIC, uncompartmented,
+// VERB_WRITE tool in the whole composed catalogue — and whatever that principal
+// holds, every run it executes can reach. A set states the reach instead of
+// leaving it to be inferred from clearance arithmetic.
+//
+// It holds create_task ALONE, and that is the ruling rather than an oversight. A
+// caller granted `escalation` can open a task and do nothing else: not list the
+// queue, not read a task back, not claim, decide or triage. Reading a task back
+// is a real need — the decided event carries a reference and not a grant, so a
+// runner that wakes fetches the task — and it is deliberately not answered here,
+// because get_task is in `triage` and widening this set to reach it would hand
+// every run the queue. KNOWN-GAPS.md carries that as open.
 option (garm.tool.v1.tool_sets) = {
-  declared: [{ name: "triage" description: "Task triage, offered to an agent whose manifest lists it." }]
+  declared: [
+    { name: "triage" description: "Task triage, offered to an agent whose manifest lists it." },
+    { name: "escalation" description: "Opening a task for a person. Held by a runner that parks a run on a decision, and by nothing else." }
+  ]
 };
 
 service TasksService {
@@ -82,6 +112,11 @@ service TasksService {
       verb: VERB_WRITE
       min_clearance: CLEARANCE_PUBLIC
       audience: [AUDIENCE_RUNNER]
+      // `escalation`, declared above, and the only method in it. Without a set
+      // this method is reachable only by an UNSCOPED caller, which is either no
+      // runner at all or a runner holding everything else that is public and
+      // writable. The file comment on tool_sets has the rest.
+      sets: ["escalation"]
       approval: { mode: MODE_NONE }
       effects: { idempotent: true reversibility: REVERSIBILITY_FULL }
     };

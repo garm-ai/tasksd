@@ -1,10 +1,15 @@
 package tasks_test
 
 import (
+	"slices"
 	"testing"
 
+	"google.golang.org/protobuf/proto"
+
+	toolv1 "github.com/garm-ai/contracts/garm/tool/v1"
 	"github.com/garm-ai/contracts/wire"
 
+	tasksv1 "github.com/garm-ai/tasksd/gen/garm/tasks/v1"
 	"github.com/garm-ai/tasksd/internal/tasks"
 )
 
@@ -47,6 +52,65 @@ func TestTheContractDeclaresEightToolsOnTheirOwnRoutes(t *testing.T) {
 	}
 }
 
+// Every method declares a tool set, and `escalation` holds create_task alone.
+//
+// Both halves are rules about the daemon rather than style. A tool in NO set is
+// reachable only by a caller in NO set — garmd's `inScope` refuses a scoped
+// caller every tool that shares none of its sets — so an unscoped method is not
+// a lenient one, it is the one every scoped role is refused. That has gone wrong
+// twice here: decide_task and approval_card were once unreachable by every staff
+// role in the bank example, and create_task was unreachable by any runner whose
+// principal named a set, which is why nothing in the platform had ever opened a
+// task on this service.
+//
+// The second half is the least-privilege half, and it is the one that would rot
+// quietly. The principal holding `escalation` is the whole platform's runner, so
+// a method added to this set later is reach handed to every run it executes.
+// Membership is therefore pinned by name and not left to review.
+func TestEveryMethodDeclaresASetAndEscalationHoldsCreateTaskAlone(t *testing.T) {
+	svc := tasksv1.File_garm_tasks_v1_tasks_proto.Services().Get(0)
+
+	var escalation []string
+	for i := 0; i < svc.Methods().Len(); i++ {
+		md := svc.Methods().Get(i)
+		pol, _ := proto.GetExtension(md.Options(), toolv1.E_Tool).(*toolv1.ToolPolicy)
+		if pol == nil {
+			t.Errorf("%s carries no tool annotation at all", md.Name())
+			continue
+		}
+		if len(pol.GetSets()) == 0 {
+			t.Errorf("%s declares no tool set, so garmd refuses it to every caller "+
+				"that names one — which is every role in the bank example but the "+
+				"customer's", md.Name())
+			continue
+		}
+		if slices.Contains(pol.GetSets(), "escalation") {
+			escalation = append(escalation, pol.GetName())
+		}
+	}
+
+	if want := []string{"create_task"}; !slices.Equal(escalation, want) {
+		t.Errorf("`escalation` holds %v, want %v — holding this set must let a "+
+			"runner open a task and do nothing else", escalation, want)
+	}
+
+	// Declared as well as used. A catalogue carries the file's declarations, and
+	// a tool naming a set the file never declared names something that matches
+	// no caller — which costs that tool every scoped caller and says nothing.
+	decl, _ := proto.GetExtension(svc.ParentFile().Options(), toolv1.E_ToolSets).(*toolv1.DeclSet)
+	for _, want := range []string{"triage", "escalation"} {
+		found := false
+		for _, d := range decl.GetDeclared() {
+			if d.GetName() == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("the file declares no tool set named %q", want)
+		}
+	}
+}
+
 // wireShape is the value this service advertises, written down.
 //
 // A golden constant rather than only a stability check, and the reason is the
@@ -69,6 +133,14 @@ func TestTheContractDeclaresEightToolsOnTheirOwnRoutes(t *testing.T) {
 // field at the identical number so both copies still hash the same -- which is
 // the only thing keeping a deployment out of quarantine while two modules hold
 // this package.
+//
+// IT DID NOT MOVE when create_task gained `sets: ["escalation"]` later the same
+// day, and that is the stronger half of the claim above rather than a lucky
+// coincidence: a tool set is an OPTION, and this hash walks only the input and
+// output MESSAGE FIELDS of each method, emitting `message <FullName>` and
+// `field <Number> <Name> <Cardinality> <Kind>`. So the ruling that gave the
+// runner a stated reach cost no catalogue a rebuild. Verified by running this
+// test either side of that change rather than reasoned about.
 //
 // If a change to the proto moves it again, that is a real answer and not a
 // broken test: update this constant, and expect every catalogue that carries
