@@ -249,11 +249,34 @@ func person(subject string) caller {
 // runner is a runner executing a run as an agent. It is a SERVICE principal
 // acting as itself — the person the run belongs to is named by the request's
 // `requester`, not by this caller, because a runner is not that person.
+//
+// CAVEAT WORTH A COORDINATOR'S EYES: putting the agent on this caller's Act
+// is the PRE-F21 shape — a SERVICE self-mint naming an actor at `act` at all
+// is exactly what F21 fixed in sts (the agent's own tool_sets no longer
+// reach `act` to be folded against). As of sts v0.6.1 a self-mint carries NO
+// act entry whatsoever; the agent it named is spent on CanRun and never
+// becomes one. This helper still sets one so every test built on it keeps
+// asserting what it always asserted — that the task records which agent
+// asked — without this task deciding, unilaterally, that those assertions
+// are wrong. Task-18's own regression test, below, exercises the shape sts
+// actually sends today (no Act, no Agent) and asserts create_task succeeds
+// anyway, which is the part this helper's shape could not have caught.
 func runner(agent, runID string) caller {
 	return caller{
 		Subject: theRunnerSvc, Kind: toolv1.PrincipalKind_PRINCIPAL_KIND_SERVICE,
 		Act: []string{agent}, RunID: runID,
 	}
+}
+
+// runnerWithNoAgentAttribution is the shape sts actually mints today for a
+// SERVICE self-mint (decisions/2026-10-02-the-agent-is-authorization-input-
+// not-an-actor.md): no `act` entry, no agent anywhere in the token. Built
+// from the real contracts primitives — toolv1.InvocationContext and
+// callctx.Encode, not a replica of garmd's own Fold/Kind logic — so this is
+// the minimal, verified-real envelope rather than a guess at what garmd
+// does with a chain. See TestCreateTaskSucceedsWithNoAgentAttribution.
+func runnerWithNoAgentAttribution(runID string) caller {
+	return caller{Subject: theRunnerSvc, Kind: toolv1.PrincipalKind_PRINCIPAL_KIND_SERVICE, RunID: runID}
 }
 
 // invocation is the header the daemon sets on every hop.
@@ -276,6 +299,16 @@ func (f *fixture) invocation(t *testing.T, c caller) string {
 		ic.Act = append(ic.Act, &toolv1.Act{
 			Subject: a, Kind: toolv1.PrincipalKind_PRINCIPAL_KIND_AGENT,
 		})
+	}
+	// agent (contracts v0.12.0, field 12) is attribution, and garmd sources
+	// it from Principal.Actor — the innermost chain entry — never from Act
+	// itself. Mirrored here the same way: the LAST entry of c.Act when there
+	// is one, same as every caller built in this file already means by
+	// naming an actor. A direct caller (person, or a runner's self-mint with
+	// no delegation at all) carries none, honestly — see runner()'s own
+	// comment for why that is the real shape, not a gap in this fixture.
+	if len(c.Act) > 0 {
+		ic.Agent = c.Act[len(c.Act)-1]
 	}
 	enc, err := callctx.Encode(ic)
 	if err != nil {

@@ -5,8 +5,8 @@ github.com/antithesishq/antithesis-sdk-go v0.8.0-default-no-op/go.mod h1:FQyySia
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
-github.com/garm-ai/contracts v0.2.0 h1:iaUDj16dABG8xWBq/RG1Ybi7bc1Z9RunrwwpT05mABE=
-github.com/garm-ai/contracts v0.2.0/go.mod h1:93sBd/xmW9OrzHHxRj4H1Lh9ne4PPyDzlk9whdhc8LE=
+github.com/garm-ai/contracts v0.12.0 h1:DXk2Cva3w3w96hC/Z/nvMmoAJBTsJMOnanPaz2+xvIM=
+github.com/garm-ai/contracts v0.12.0/go.mod h1:93sBd/xmW9OrzHHxRj4H1Lh9ne4PPyDzlk9whdhc8LE=
 github.com/garm-ai/tool-go v0.6.0 h1:uV250y1HN7XKsb+I7SzDsgmwHEJ6sG9aRWXo0Y3LogY=
 github.com/garm-ai/tool-go v0.6.0/go.mod h1:yGvmAMJxuQMqHSdUlybaJpdhI6dnc0AlzLBADHNQd4g=
 github.com/go-jose/go-jose/v4 v4.1.5 h1:RjgjO2LOtWOJKUC5wpwY9LR3B3vwVAz6JS2YHfYU6eA=

@@ -204,11 +204,21 @@ because the design does not ask it to. Somebody who learns a task id and is
 inside the tenant can therefore decline a task they never claimed. Until the
 daemon's instance authorization lands, four eyes is the guard on that path.
 
-**The invocation carries no runner identity, and no run id either.** §4.4 asks
-`create_task` to check that an execution identity is present beside the delegation
-chain. `garm.tool.v1.InvocationContext` has no such field, so what is checked is
-the principal's kind, that the chain names an agent, and that a run id is on the
-call. The check gets stricter when the contract carries the identity.
+**The invocation carries no runner identity.** §4.4 asks `create_task` to check
+that an execution identity is present beside the delegation chain.
+`garm.tool.v1.InvocationContext` has no such field, so what is checked is the
+principal's kind, that a requester is named, and that a run id is on the call.
+The check gets stricter when the contract carries the identity.
+
+**It no longer also checks that the chain names an agent, and that removal is
+F22's fix, not a narrowing of this gap.** The chain was never the right place
+to read that from — `act` folds authority, so an agent entry there is what let
+F21 happen — and the check (`HasAgent()`) had refused every caller that ever
+reached it regardless, for reasons this file's own history above already
+covers for `run_id`. Whether an agent asked is attribution now
+(`InvocationContext.agent`, read by `Caller.Agent()`), recorded on the row and
+never required: see `CLAUDE.md`'s note on it and the comment at the removed
+check in `service.go`'s `Create`.
 
 The run id is not a contract gap and is no longer a gap in `Create` either:
 `CallContext.run_id` is declared, `garmd` never sets it, and `Create` therefore

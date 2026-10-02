@@ -850,6 +850,48 @@ func TestCreateRefusesARequestThatNamesNoRun(t *testing.T) {
 	}
 }
 
+// -------------------------------------------- the agent is attribution, not a gate
+
+// F22. `Create` used to require `c.HasAgent()`: a chain entry of Kind AGENT.
+// That gate had refused every caller that ever reached it, for two
+// independent reasons stacked on top of each other — garmd never set Kind on
+// a forwarded `act` entry (core.go:1018, fixed in this same change), and
+// separately, since sts v0.6.1, a SERVICE self-mint carries no `act` entry at
+// all: the agent it names is spent on CanRun and never becomes an actor. So
+// even a garmd that set Kind correctly could never have satisfied this gate
+// for the one caller that reaches create_task.
+//
+// This is the envelope that caller actually sends: a SERVICE principal, no
+// Act, no Agent attribution — built from the real contracts wire types
+// (toolv1.InvocationContext, callctx.Encode) and not from any replica of
+// garmd's internal Fold/Kind logic, so this is the verified real shape rather
+// than this suite's belief about one. create_task must succeed anyway:
+// reachability is already fully decided by Kind SERVICE, Requester, and
+// garmd's own escalation-only scoping of this method — none of which this
+// caller fails — and the agent's absence does not become a fourth gate under
+// a new field, which is exactly how F22 happened the first time.
+func TestCreateTaskSucceedsWithNoAgentAttribution(t *testing.T) {
+	f := newFixture(t)
+
+	req := createRequest()
+	var res tasksv1.CreateTaskResponse
+	f.ok(t, routeCreate, runnerWithNoAgentAttribution(theRunID), req, &res)
+	if res.GetTaskId() == "" {
+		t.Fatal("create_task refused a caller garmd would really send: SERVICE, " +
+			"a requester, a run — and no agent attribution at all")
+	}
+
+	// And the row says so honestly rather than inventing a value: empty,
+	// visible, never load-bearing for the call that just succeeded.
+	var got tasksv1.Task
+	f.ok(t, routeGet, person(theApprove),
+		&cardv1.TaskRef{TaskId: proto.String(res.GetTaskId())}, &got)
+	if len(got.GetEvents()) != 1 || got.GetEvents()[0].GetActor() != "" {
+		t.Errorf("trail = %+v, want the opening event's actor empty — attribution "+
+			"this call never had must not be fabricated to fill it", got.GetEvents())
+	}
+}
+
 // The subject the decided event lands on is built from the run the REQUEST named.
 //
 // This is the point of the field rather than a detail of it: the run id keys

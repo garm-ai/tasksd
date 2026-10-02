@@ -23,6 +23,19 @@ one; the proto's comment on it is the place to read why that is sound.
 read it until 2026-10-02 and refused every call as a result, and it is now gated
 on the caller's attested identity instead.
 
+**The agent is attribution too, and `create_task` no longer gates on it either
+(F22).** `Caller.Agent()` reads `InvocationContext.agent` (contracts v0.12.0,
+field 12) — whose run a call belongs to — never the delegation chain. It used
+to read `c.Act[len-1].Subject` with `Kind == PRINCIPAL_KIND_AGENT`, and that
+gate (`!c.HasAgent()`) refused every caller that ever reached it: `garmd` never
+set `Kind` on a forwarded `act` entry, and independently, since `sts` v0.6.1 a
+SERVICE self-mint carries no `act` entry at all (the agent it names is spent on
+`CanRun` and never becomes an actor). `create_task`'s reachability is fully
+decided without the agent — `Kind SERVICE`, `Requester`, and `garmd`'s own
+`escalation`-only scoping of this method — so its presence is recorded and
+never required; see the comment at the removed check in `service.go`'s
+`Create` for the argument in full.
+
 **2. This service never says yes on a person's behalf.** It does not mint an
 approval and it cannot: the approver's own client mints one against the
 approver's own credentials, and what arrives here is that token. This service

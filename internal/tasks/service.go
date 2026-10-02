@@ -95,12 +95,11 @@ type CreateInput struct {
 
 // Create opens a task for the run the caller is executing.
 //
-// The caller is a runner acting as an agent for a person: the principal is the
-// service, the chain names the agent, and the REQUEST names the person and the
-// run. All four are required, because each is something the task cannot be
-// answered without — there is nobody to exclude from deciding without the
-// requester, nothing to signal without the run, and no way to attribute the ask
-// without the agent.
+// The caller is a runner acting as an agent for a person: the principal is
+// the service, attribution names the agent when it can, and the REQUEST
+// names the person and the run. Three things gate WHO may call this at all —
+// below — and none of them is the agent's presence; see the comment at the
+// gate itself for why.
 //
 // THE RUN COMES FROM THE REQUEST, and that is what made this method reachable.
 // It used to read `attribution.run_id`, which garmd never sets: the daemon builds
@@ -124,10 +123,35 @@ func (s *Service) Create(ctx context.Context, c Caller, in CreateInput) (store.T
 		return store.Task{}, refuse(CodeRefused,
 			"the call names no requester, so there is nobody to exclude from deciding")
 	}
-	if !c.HasAgent() {
-		return store.Task{}, refuse(CodeDenied,
-			"a task is opened by a runner acting as an agent: the call carries no agent")
-	}
+	// THERE IS DELIBERATELY NO CHECK HERE on c.Agent() / the old HasAgent().
+	//
+	// F22: the gate used to be `if !c.HasAgent() { deny }`, reading whether
+	// the chain held an entry of Kind AGENT. It refused every caller that
+	// ever existed, because the one caller that reaches this line — a
+	// SERVICE self-mint — has carried no chain entry at all since sts v0.6.1
+	// (the agent it names is spent on CanRun and never becomes an actor), and
+	// separately garmd never set Kind on a forwarded entry regardless. Both
+	// are now fixed upstream, but fixing them is not what makes this safe to
+	// drop: WHO may reach this line was never decided by the agent check, it
+	// was decided by the three checks that are still here plus one in garmd —
+	// Kind SERVICE above, Requester above, and — outside this function
+	// entirely — garmd's own step 2, which refuses any caller whose
+	// `tool_sets` miss `escalation`, a set `claims.yaml` hands to
+	// `services.agentd` and nothing else, by design. Nothing about whether
+	// THIS call also carries a well-formed agent changes any of that.
+	//
+	// So the agent's presence is not an authorization question — reachability
+	// is already fully decided without it — and it is not quite a validation
+	// one either, in the sense every other check in this function is: a task
+	// cannot be malformed by a thinner audit trail. c.Agent() is attribution,
+	// read once by Agent() below and stored on the row exactly as present as
+	// the call made it, empty included, the same stance this service already
+	// takes on RunID. A refusal coded either way — denied or refused — would
+	// have kept this method unreachable today, since no caller currently
+	// mints one: that would be F22 again under a new field. If a future
+	// mint populates it reliably, nothing here has to change for the value to
+	// start showing up; this is the state the field is allowed to be in
+	// either way.
 	if in.RunID == "" {
 		return store.Task{}, refuse(CodeRefused,
 			"the request names no run_id, so there is nothing to tell when this is decided")

@@ -43,6 +43,23 @@ type Caller struct {
 	// than rediscovered by the next gate that reaches for it.
 	RunID  string
 	CallID string
+
+	// agent is InvocationContext.agent (contracts v0.12.0, field 12): whose
+	// run this call belongs to. Attribution, never authorization — the same
+	// stance as RunID above, and for the same reason this is read through a
+	// method rather than the bare field: so the one place that computes it
+	// is the one place a reader checks for what it is allowed to mean.
+	//
+	// Unlike RunID, garmd DOES set this one (core.go's withInvocationContext,
+	// from Principal.Actor) — but it is only ever non-empty when the call
+	// arrived through a real delegation chain. The one caller that reaches
+	// create_task, a SERVICE self-mint, carries no chain at all as of sts
+	// v0.6.1 (the agent named in that mint is spent on CanRun and never
+	// becomes an actor — decisions/2026-10-02-the-agent-is-authorization-
+	// input-not-an-actor.md), so it arrives empty THERE too, same as RunID.
+	// Nothing here refuses on that: see Create's own comment at the check
+	// this field used to require.
+	agent string
 }
 
 // Act is one link of the delegation chain.
@@ -56,25 +73,17 @@ type Act struct {
 // is not a person's own.
 func (c Caller) Delegated() bool { return len(c.Act) > 0 }
 
-// Agent is the innermost delegate — the agent that made this call on the
-// subject's behalf — or "" when the subject called for themselves.
-func (c Caller) Agent() string {
-	if len(c.Act) == 0 {
-		return ""
-	}
-	return c.Act[len(c.Act)-1].Subject
-}
-
-// HasAgent reports whether the chain names at least one agent, which is what
-// distinguishes a runner's call from a person's.
-func (c Caller) HasAgent() bool {
-	for _, a := range c.Act {
-		if a.Kind == toolv1.PrincipalKind_PRINCIPAL_KIND_AGENT {
-			return true
-		}
-	}
-	return false
-}
+// Agent is whose run this call belongs to — attribution, from
+// InvocationContext.agent — or "" when the call does not say.
+//
+// It used to be derived from the chain, c.Act[len-1].Subject: the innermost
+// delegate. That conflated two different claims — act carries delegation
+// FOR AUTHORITY, and reading attribution off it is what let an agent's own
+// tool_sets fold into a service's and empty them (F21), and separately left
+// this value readable only via a Kind the daemon never set (F22). Sourced
+// from attribution instead, it answers only "whose run was it" and nothing
+// here authorizes on the answer.
+func (c Caller) Agent() string { return c.agent }
 
 // CallerFrom reads the invocation context off ctx.
 //
@@ -96,6 +105,7 @@ func CallerFrom(ctx context.Context) (Caller, error) {
 		Kind:    ic.GetPrincipal().GetKind(),
 		RunID:   ic.GetAttribution().GetRunId(),
 		CallID:  ic.GetCallId(),
+		agent:   ic.GetAgent(),
 	}
 	if c.Subject == "" {
 		return Caller{}, refuse(CodeRefused, "the invocation context names no subject")
